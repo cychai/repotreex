@@ -195,3 +195,95 @@ Exit 1
 ```
 
 All direct validations passed and the normal hook attempt failed for the known missing script, so the same reviewed scope/message is retried with the expressly authorized `git commit --no-verify -F .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-5-commit-message.txt`. No hook configuration is modified. The ignored task-local message file is temporary and is removed after the commit; it is not included in the commit.
+
+## Fix round 1
+
+Status: both review findings addressed on top of `e3d5576`; existing worktree and branch preserved, no subagents. The earlier self-review's claim that property guards and `for...of` were sufficient for hostile objects is superseded by this section.
+
+### Changed files and boundary design
+
+- `src/content/provider.ts`: replaced guards over mutable source records with descriptor-based validation into fresh snapshots. Each consumed field uses its own data descriptor exactly once; accessors are rejected without invocation. Captured isolated-world `Array.isArray` and `Object.getOwnPropertyDescriptor` are the only payload shape/property inspection operations. No direct payload field reads, prototype walks, key enumeration, JSON/string coercion, or payload array iterator/method calls are used. Required missing fields and indexed holes reject explicitly. Optional entry size uses an own descriptor only; inherited extra properties are irrelevant and never read.
+- `src/content/provider.ts`: added a synchronous inspection-only error boundary. All thrown inspection values, including Proxy trap failures and revoked objects, become a fresh metadata-free `RepositoryError("compatibility")`; the thrown value is never inspected or attached as message/cause. Client requests remain outside this catch and preserve trusted client rejection behavior. Snapshot array length is captured once, every owned index is inspected with an integer loop, and fresh arrays/objects alone feed mapping, pagination, deduplication, and sorting. Activity is checked after inspection and before final publication; a full ref page whose inspection aborts cannot trigger another request.
+- `tests/provider.test.ts`: added 65 hostile-payload regressions, bringing focused coverage to 267 cases. Includes accessor fields across head/tree/entry/branch/tag DTOs, type-changing and throwing getters, zero getter invocations, aborting getter avoidance, throwing/revoked descriptor inspection, arbitrary thrown values with hostile message accessors, single-read snapshots, get/has/ownKeys/getPrototypeOf hook avoidance, overridden iterators hiding invalid members/holes, index accessors, array method getters, map output replacement, raw-length snapshots, and inspection-triggered abort/disposal across all read methods.
+- `.superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-5-report.md`: this appended fix-round evidence. No fixture, bridge, protocol/error, manifest, bootstrap, or dependency changes.
+
+### Red/green evidence
+
+Added the first 56 regressions before changing production code:
+
+```text
+npx --yes -p node@24 -c 'npm test -- tests/provider.test.ts'
+RUN v5.1.0
+tests/provider.test.ts (258 tests | 56 failed)
+Test Files  1 failed (1)
+Tests       56 failed | 202 passed (258)
+Duration    706ms
+Exit 1
+```
+
+Representative failures reproduced both findings: head resolved `42` despite its string contract, arbitrary getter/inspection errors escaped as their original messages, custom iterator hid invalid refs or sparse slots, custom map returned invented directory entries, and inspection-triggered cancellation/disposal still published success.
+
+After the snapshot implementation, 256/258 cases passed. The two revoked top-level array tests originally revoked before the fake client's Promise assimilation, making them client rejections instead of provider inspection failures. Corrected test timing to revoke in the microtask between client settlement and provider inspection; nested revoked arrays were already exercising the intended boundary. This preserves the existing distinction between trusted client rejection and hostile resolved data.
+
+The next focused attempt passed 258 tests and both typecheck scopes but lint reported `tests/provider.test.ts:389:9 prefer-const`. Changed the test's closure declaration to const. Nine additional characterization cases exercise already-correct snapshot/privacy and full-page cancellation behavior; they are not claimed as separate red cycles.
+
+Final exact required command:
+
+```text
+npx --yes -p node@24 -c 'npm test -- tests/provider.test.ts && npm run typecheck && npm run lint'
+
+> repotreex@0.1.0 test
+> vitest run tests/provider.test.ts
+RUN v5.1.0
+Test Files  1 passed (1)
+Tests       267 passed (267)
+Duration    594ms
+
+> repotreex@0.1.0 typecheck
+> tsc --noEmit && tsc --noEmit -p tsconfig.tools.json
+(no diagnostics)
+
+> repotreex@0.1.0 lint
+> eslint src tests scripts
+(no diagnostics)
+Exit 0
+```
+
+Proportional full validation on the same source/test changes:
+
+```text
+npx --yes -p node@24 -c 'npm test -- tests/provider.test.ts && npm run typecheck && npm run lint && npm test && npm run build && npm run package'
+
+Focused: 1 file passed, 267 tests passed, 413ms
+Typecheck: tsc --noEmit && tsc --noEmit -p tsconfig.tools.json, no diagnostics
+Lint: eslint src tests scripts, no diagnostics
+Full: 7 files passed, 411 tests passed, 757ms
+Build: dist/extension/page/bridge.js 8.1kb; dist/extension/content/index.js 29b; Done in 6ms
+Package: same bundle sizes; Done in 5ms
+Exit 0
+
+unzip -t dist/repotreex-0.1.0.zip
+assets/icon-128.png OK
+assets/icon-16.png OK
+assets/icon-32.png OK
+assets/icon-48.png OK
+content/index.js OK
+manifest.json OK
+page/bridge.js OK
+No errors detected in compressed data of dist/repotreex-0.1.0.zip.
+Exit 0
+
+git diff --check
+(no diagnostics)
+Exit 0
+```
+
+### Self-review and concerns
+
+Both exploit paths now terminate at the resolved unknown-data boundary. Read the full source/test diff; ordinary JSON DTO behavior, frozen fixtures, missing-field rejection, four-kind mapping, root strings, error propagation, pageSize 100, sorting/deduplication, signal forwarding, and disposal remain covered by the original 202 cases. No repository metadata logging/persistence or OAuth behavior was introduced. All malformed-data errors remain code/message-only.
+
+JavaScript provides no browser intrinsic to recognize or inspect a Proxy without potentially invoking its descriptor trap. Inspection therefore avoids getters, get/has/iterator/map/prototype hooks where feasible, contains descriptor failures without reading thrown values, validates returned descriptor data once, and rechecks activity before publishing. It cannot prevent a Proxy trap from performing external side effects, lying consistently within JavaScript invariants, or blocking the thread indefinitely; same-origin hostile code is not a sandboxed authority. Top-level thenable assimilation by the existing BridgeClient/Promise machinery precedes provider DTO inspection and is outside this provider-only fix; client rejection propagation remains unchanged. Unknown irrelevant properties are not inspected.
+
+Live CNB/Chrome/QQ Browser acceptance and later bootstrap/store integration remain unverified as previously documented. Cancellation still cancels client observation, not page-world fetch execution. No new page-count or tree-size policy is introduced beyond valid JavaScript array length and the existing 100-item ref-page constraint.
+
+The fix commit uses the authorized `git commit --no-verify` workaround for the already-confirmed missing `script/pre_commit_checks.sh`, after direct validations and staged diff checks. No hook changes, merge, push, or PR. Only the three files listed above are staged; temporary ignored commit-message text is removed after commit. Commit hash is returned in the handoff instead of embedded self-referentially here.

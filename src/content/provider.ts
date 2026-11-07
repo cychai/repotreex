@@ -21,12 +21,25 @@ const entryKinds: Record<TreeEntryType, EntryKind> = {
   tree: "directory", blob: "file", link: "link", submodule: "submodule",
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+// Capture isolated-world intrinsics; never call methods supplied by a payload.
+const isArray = Array.isArray;
+const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+
+function requireRecord(value: unknown): object {
+  if (typeof value !== "object" || value === null || isArray(value)) throw new RepositoryError("compatibility");
+  return value;
 }
 
-function hasOwnFields(value: Record<string, unknown>, fields: string[]): boolean {
-  return fields.every((field) => Object.hasOwn(value, field));
+function ownDataDescriptor(value: object, key: string): PropertyDescriptor | undefined {
+  const descriptor = getOwnPropertyDescriptor(value, key);
+  if (descriptor && !("value" in descriptor)) throw new RepositoryError("compatibility");
+  return descriptor;
+}
+
+function ownData(value: object, key: string): unknown {
+  const descriptor = ownDataDescriptor(value, key);
+  if (!descriptor) throw new RepositoryError("compatibility");
+  return descriptor.value;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -41,35 +54,61 @@ function isEntryType(value: unknown): value is TreeEntryType {
   return value === "tree" || value === "blob" || value === "link" || value === "submodule";
 }
 
-function isTreeEntry(value: unknown): value is TreeEntry {
-  return isRecord(value) && hasOwnFields(value, ["type", "path", "name", "sha"]) &&
-    isEntryType(value.type) && isNonEmptyString(value.path) &&
-    isNonEmptyString(value.name) && isNonEmptyString(value.sha) &&
-    (!("size" in value) || (Object.hasOwn(value, "size") && isSize(value.size)));
-}
-
-function isTreeContent(value: unknown): value is TreeContent {
-  if (!isRecord(value) || !hasOwnFields(value, ["type", "path", "name", "sha", "size", "entries"]) ||
-    value.type !== "tree" || typeof value.path !== "string" || typeof value.name !== "string" ||
-    !isNonEmptyString(value.sha) || !isSize(value.size) || !Array.isArray(value.entries)) return false;
-  // Iteration visits sparse slots as undefined; Array.every would silently skip them.
-  for (const entry of value.entries) {
-    if (!isTreeEntry(entry)) return false;
+function snapshotArray<T>(value: unknown, snapshot: (item: unknown) => T, maximum = 0xffff_ffff): T[] {
+  if (!isArray(value)) throw new RepositoryError("compatibility");
+  const length = ownData(value, "length");
+  if (typeof length !== "number" || !Number.isInteger(length) || length < 0 || length > maximum) {
+    throw new RepositoryError("compatibility");
   }
-  return true;
-}
-
-function isRef(value: unknown): value is HeadRef | Branch | Tag {
-  return isRecord(value) && hasOwnFields(value, ["name", "sha"]) &&
-    isNonEmptyString(value.name) && isNonEmptyString(value.sha);
-}
-
-function isRefPage(value: unknown): value is (Branch | Tag)[] {
-  if (!Array.isArray(value) || value.length > 100) return false;
-  for (const ref of value) {
-    if (!isRef(ref)) return false;
+  const result: T[] = [];
+  for (let index = 0; index < length; index++) {
+    // Own descriptors reject holes/accessors, without consulting an iterator or map.
+    result[index] = snapshot(ownData(value, String(index)));
   }
-  return true;
+  return result;
+}
+
+function snapshotTreeEntry(value: unknown): TreeEntry {
+  const record = requireRecord(value);
+  const type = ownData(record, "type");
+  const path = ownData(record, "path");
+  const name = ownData(record, "name");
+  const sha = ownData(record, "sha");
+  const size = ownDataDescriptor(record, "size");
+  if (!isEntryType(type) || !isNonEmptyString(path) || !isNonEmptyString(name) || !isNonEmptyString(sha) ||
+    (size && !isSize(size.value))) throw new RepositoryError("compatibility");
+  return { type, path, name, sha };
+}
+
+function snapshotTreeContent(value: unknown): TreeContent {
+  const record = requireRecord(value);
+  const type = ownData(record, "type");
+  const path = ownData(record, "path");
+  const name = ownData(record, "name");
+  const sha = ownData(record, "sha");
+  const size = ownData(record, "size");
+  const entries = ownData(record, "entries");
+  if (type !== "tree" || typeof path !== "string" || typeof name !== "string" ||
+    !isNonEmptyString(sha) || !isSize(size)) throw new RepositoryError("compatibility");
+  return { type, path, name, sha, size, entries: snapshotArray(entries, snapshotTreeEntry) };
+}
+
+function snapshotRef(value: unknown): HeadRef | Branch | Tag {
+  const record = requireRecord(value);
+  const name = ownData(record, "name");
+  const sha = ownData(record, "sha");
+  if (!isNonEmptyString(name) || !isNonEmptyString(sha)) throw new RepositoryError("compatibility");
+  return { name, sha };
+}
+
+function inspectPayload<T>(snapshot: () => T): T {
+  try {
+    return snapshot();
+  } catch {
+    // Descriptor inspection can invoke Proxy traps. Never expose their thrown values.
+    // This synchronous boundary excludes client requests and their trusted errors.
+    throw new RepositoryError("compatibility");
+  }
 }
 
 export function createSessionProvider(client: BridgeClient): RepositoryProvider {
@@ -93,33 +132,39 @@ export function createSessionProvider(client: BridgeClient): RepositoryProvider 
         type: kind === "branch" ? "list-branches" : "list-tags", repo, page, pageSize: 100,
       }, signal);
       ensureActive(signal);
-      if (!isRefPage(data)) throw new RepositoryError("compatibility");
-      for (const ref of data) {
+      const refsPage = inspectPayload(() => snapshotArray(data, snapshotRef, 100));
+      ensureActive(signal);
+      for (const ref of refsPage) {
         if (!refs.has(ref.name)) refs.set(ref.name, { kind, name: ref.name, sha: ref.sha });
       }
       // Use the raw page length, not the unique count, to determine completion.
-      if (data.length < 100) break;
+      if (refsPage.length < 100) break;
     }
-    return [...refs.values()].sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    const result = [...refs.values()].sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    ensureActive(signal);
+    return result;
   };
 
   return {
     async getHead(repo, signal) {
       const data = await request({ type: "get-head", repo }, signal);
       ensureActive(signal);
-      if (!isRef(data)) throw new RepositoryError("compatibility");
-      return data.name;
+      const head = inspectPayload(() => snapshotRef(data));
+      ensureActive(signal);
+      return head.name;
     },
     async listDirectory(repo, ref, path, signal) {
       const data = await request({ type: "list-directory", repo, ref, path }, signal);
       ensureActive(signal);
-      if (!isTreeContent(data)) throw new RepositoryError("compatibility");
-      return {
-        path: data.path, sha: data.sha,
-        entries: data.entries.map((entry) => ({
+      const tree = inspectPayload(() => snapshotTreeContent(data));
+      const result = {
+        path: tree.path, sha: tree.sha,
+        entries: tree.entries.map((entry) => ({
           kind: entryKinds[entry.type], name: entry.name, path: entry.path, sha: entry.sha,
         })),
       };
+      ensureActive(signal);
+      return result;
     },
     listBranches: (repo, signal) => listRefs(repo, "branch", signal),
     listTags: (repo, signal) => listRefs(repo, "tag", signal),

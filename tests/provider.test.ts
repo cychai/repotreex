@@ -319,3 +319,235 @@ describe("session provider", () => {
     await rejection;
   });
 });
+
+describe("hostile provider payloads", () => {
+  const recordCases = [
+    { label: "head", fixture: headFixture, fields: ["name", "sha"], wrap: (record: object) => record,
+      run: (provider: RepositoryProvider) => provider.getHead("acme/repo") },
+    { label: "tree", fixture: treeFixture, fields: ["type", "path", "name", "sha", "size", "entries"], wrap: (record: object) => record,
+      run: (provider: RepositoryProvider) => provider.listDirectory("acme/repo", "main", "src") },
+    { label: "entry", fixture: treeEntriesFixture[0], fields: ["type", "path", "name", "sha", "size"],
+      wrap: (record: object) => ({ ...treeFixture, entries: [record] }),
+      run: (provider: RepositoryProvider) => provider.listDirectory("acme/repo", "main", "src") },
+    ...refMethods.map((method) => ({ label: method, fixture: headFixture, fields: ["name", "sha"],
+      wrap: (record: object) => [record], run: (provider: RepositoryProvider) => provider[method]("acme/repo") })),
+  ];
+
+  for (const { label, fixture, fields, wrap, run } of recordCases) {
+    for (const field of fields) {
+      it(`rejects accessor-backed ${label} ${field} without executing it`, async () => {
+        let reads = 0;
+        const record = Object.defineProperty({ ...fixture }, field, {
+          get() { reads++; return reads === 1 ? Reflect.get(fixture, field) : 42; },
+        });
+        await expectCompatibility(run(providerFor(wrap(record)).provider));
+        expect(reads).toBe(0);
+      });
+    }
+
+    it(`does not execute a throwing ${label} getter or leak its message`, async () => {
+      let reads = 0;
+      const record = Object.defineProperty({ ...fixture }, "name", {
+        get() { reads++; throw new Error("synthetic-payload-message"); },
+      });
+      await expectCompatibility(run(providerFor(wrap(record)).provider));
+      expect(reads).toBe(0);
+    });
+
+    it(`contains ${label} descriptor inspection failures without leaking thrown objects`, async () => {
+      const record = new Proxy(fixture, {
+        getOwnPropertyDescriptor() { throw new Error("synthetic-inspection-message"); },
+      });
+      await expectCompatibility(run(providerFor(wrap(record)).provider));
+    });
+  }
+
+  it("never invokes an aborting head accessor", async () => {
+    const controller = new AbortController();
+    const data = Object.defineProperty({ ...headFixture }, "name", {
+      get() { controller.abort(); return "main"; },
+    });
+    await expectCompatibility(providerFor(data).provider.getHead("acme/repo", controller.signal));
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  it.each(calls)("checks activity after successful $label inspection", async ({ label, run }) => {
+    const controller = new AbortController();
+    const fixture = label === "directory" ? treeFixture : headFixture;
+    const record = new Proxy(fixture, {
+      getOwnPropertyDescriptor(target, key) {
+        controller.abort("synthetic reason");
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    const data = label === "branches" || label === "tags" ? [record] : record;
+    await expect(run(providerFor(data).provider, controller.signal)).rejects.toMatchObject({ code: "cancelled" });
+  });
+
+  it.each(calls)("checks disposal after successful $label inspection", async ({ label, run }) => {
+    const fixture = label === "directory" ? treeFixture : headFixture;
+    const record = new Proxy(fixture, {
+      getOwnPropertyDescriptor(target, key) {
+        provider.dispose();
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    const data = label === "branches" || label === "tags" ? [record] : record;
+    const provider = providerFor(data).provider;
+    await expect(run(provider)).rejects.toMatchObject({ code: "cancelled" });
+  });
+
+  it("uses each head own data descriptor once and never directly reads payload fields", async () => {
+    const inspections: PropertyKey[] = [];
+    const data = new Proxy({ ...headFixture }, {
+      get(target, key) {
+        if (key === "then") return undefined;
+        throw new Error("synthetic-direct-read-message");
+      },
+      getOwnPropertyDescriptor(target, key) {
+        inspections.push(key);
+        if (key === "name" && inspections.filter((item) => item === key).length > 1) {
+          return { value: 42, configurable: true, enumerable: true, writable: true };
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    await expect(providerFor(data).provider.getHead("acme/repo")).resolves.toBe("main");
+    expect(inspections).toEqual(["name", "sha"]);
+  });
+
+  const arrayCases = [
+    { label: "entries", valid: treeEntriesFixture[1], wrap: (array: object) => ({ ...treeFixture, entries: array }),
+      run: (provider: RepositoryProvider) => provider.listDirectory("acme/repo", "main", "src") },
+    ...refMethods.map((method) => ({ label: method, valid: headFixture, wrap: (array: object) => array,
+      run: (provider: RepositoryProvider) => provider[method]("acme/repo") })),
+  ];
+
+  for (const { label, valid, wrap, run } of arrayCases) {
+    it(`does not let a ${label} iterator hide invalid indexed members`, async () => {
+      const data = [valid, null];
+      let iterations = 0;
+      Object.defineProperty(data, Symbol.iterator, { value: function* () { iterations++; yield valid; } });
+      await expectCompatibility(run(providerFor(wrap(data)).provider));
+      expect(iterations).toBe(0);
+    });
+
+    it(`does not let a ${label} iterator hide holes`, async () => {
+      const data = new Array(1);
+      Object.defineProperty(data, Symbol.iterator, { value: function* () { yield valid; } });
+      await expectCompatibility(run(providerFor(wrap(data)).provider));
+    });
+
+    it(`rejects accessor-backed ${label} indices without executing them`, async () => {
+      let reads = 0;
+      const data = Object.defineProperty([valid], "0", { get() { reads++; return valid; } });
+      await expectCompatibility(run(providerFor(wrap(data)).provider));
+      expect(reads).toBe(0);
+    });
+
+    it(`ignores ${label} iterator and method getters instead of invoking them`, async () => {
+      const data = [valid];
+      let reads = 0;
+      for (const key of [Symbol.iterator, "map", "forEach", "every", "sort"]) {
+        Object.defineProperty(data, key, { get() { reads++; throw new Error("synthetic-array-method-message"); } });
+      }
+      const result = await run(providerFor(wrap(data)).provider);
+      expect(result).toMatchObject(label === "entries"
+        ? { entries: [{ kind: "file", name: "a.ts", path: "src/a.ts", sha: "blob-sha" }] }
+        : [{ kind: label === "listBranches" ? "branch" : "tag", name: "main", sha: "head-sha" }]);
+      expect(reads).toBe(0);
+    });
+
+    it(`contains revoked ${label} array inspection failures`, async () => {
+      const { proxy, revoke } = Proxy.revocable([valid], {});
+      // Revoke after Promise assimilation, so the failure is at provider inspection,
+      // not a client rejection caused by reading a revoked thenable.
+      const promise = run(providerFor(wrap(proxy)).provider);
+      queueMicrotask(revoke);
+      await expectCompatibility(promise);
+    });
+
+    it(`contains throwing ${label} index descriptor traps`, async () => {
+      const data = new Proxy([valid], {
+        getOwnPropertyDescriptor(target, key) {
+          if (key === "0") throw new Error("synthetic-index-inspection-message");
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      });
+      await expectCompatibility(run(providerFor(wrap(data)).provider));
+    });
+  }
+
+  it("does not let payload map replace normalized directory output", async () => {
+    const entries = [treeEntriesFixture[1]];
+    Object.defineProperty(entries, "map", { value: () => [{ kind: "invented", name: 42 }] });
+    await expect(providerFor({ ...treeFixture, entries }).provider.listDirectory("acme/repo", "main", "src"))
+      .resolves.toEqual({ path: "src", sha: "tree-sha", entries: [{ kind: "file", name: "a.ts", path: "src/a.ts", sha: "blob-sha" }] });
+  });
+
+  it.each([null, "synthetic-thrown-string", new RepositoryError("forbidden", { status: 403 }),
+    Object.defineProperty({}, "message", { get() { throw new Error("synthetic-message-getter"); } }),
+  ])("sanitizes arbitrary inspection throws %# without inspecting the thrown value", async (thrown) => {
+    const data = new Proxy(headFixture, { getOwnPropertyDescriptor() { throw thrown; } });
+    await expectCompatibility(providerFor(data).provider.getHead("acme/repo"));
+  });
+
+  it("snapshots tree, array, and entry descriptors once without get/has/prototype hooks", async () => {
+    const reads: string[] = [];
+    const proxyFor = (fixture: object, label: string) => new Proxy(fixture, {
+      get(target, key) {
+        if (key === "then") return undefined;
+        throw new Error("synthetic-get-trap");
+      },
+      has() { throw new Error("synthetic-has-trap"); },
+      ownKeys() { throw new Error("synthetic-own-keys-trap"); },
+      getPrototypeOf() { throw new Error("synthetic-prototype-trap"); },
+      getOwnPropertyDescriptor(target, key) {
+        reads.push(`${label}:${String(key)}`);
+        if (reads.filter((read) => read === `${label}:${String(key)}`).length > 1) {
+          return { value: null, configurable: true };
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    const entry = proxyFor(treeEntriesFixture[1], "entry");
+    const entries = proxyFor([entry], "array");
+    const tree = proxyFor({ ...treeFixture, entries }, "tree");
+    await expect(providerFor(tree).provider.listDirectory("acme/repo", "main", "src")).resolves.toEqual({
+      path: "src", sha: "tree-sha", entries: [{ kind: "file", name: "a.ts", path: "src/a.ts", sha: "blob-sha" }],
+    });
+    expect(reads).toEqual(["tree:type", "tree:path", "tree:name", "tree:sha", "tree:size", "tree:entries",
+      "array:length", "array:0", "entry:type", "entry:path", "entry:name", "entry:sha", "entry:size"]);
+  });
+
+  it.each(refMethods)("snapshots %s raw page length once without direct array reads", async (method) => {
+    const reads: PropertyKey[] = [];
+    const data = new Proxy([headFixture], {
+      get(target, key) {
+        if (key === "then") return undefined;
+        throw new Error("synthetic-array-get-trap");
+      },
+      getOwnPropertyDescriptor(target, key) {
+        reads.push(key);
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    await expect(providerFor(data).provider[method]("acme/repo")).resolves.toEqual([
+      { kind: method === "listBranches" ? "branch" : "tag", name: "main", sha: "head-sha" },
+    ]);
+    expect(reads).toEqual(["length", "0"]);
+  });
+
+  it.each(refMethods)("stops %s before another page if inspection aborts on a full page", async (method) => {
+    const controller = new AbortController();
+    const page = new Proxy(refPageFixture(), {
+      getOwnPropertyDescriptor(target, key) {
+        if (key === "99") controller.abort();
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    const { provider, request } = providerFor(page);
+    await expect(provider[method]("acme/repo", controller.signal)).rejects.toMatchObject({ code: "cancelled" });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+});
