@@ -5,7 +5,7 @@ const cnbOrigin = "https://cnb.cool";
 function hasControlCharacter(value: string): boolean {
   return Array.from(value).some((character) => {
     const codePoint = character.codePointAt(0) ?? 0;
-    return codePoint <= 31 || codePoint === 127;
+    return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159);
   });
 }
 

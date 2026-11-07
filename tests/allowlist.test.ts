@@ -77,11 +77,24 @@ describe("buildAllowedRequest", () => {
     "acme/../repo",
     "acme/-/repo",
     "acme/repo\nnext",
+    "acme/repo\u0085next",
+    "acme/repo\u009fnext",
   ])("rejects unsafe repository input %s", (repo) => {
     expect(() => buildAllowedRequest({ type: "get-head", repo })).toThrow(TypeError);
   });
 
-  it.each(["/src", "src/", "src//file", ".", "..", "src/../file", "src?raw=1", "src#part"])(
+  it.each([
+    "/src",
+    "src/",
+    "src//file",
+    ".",
+    "..",
+    "src/../file",
+    "src?raw=1",
+    "src#part",
+    "src/next\u0085file",
+    "src/next\u009ffile",
+  ])(
     "rejects unsafe content path input %s",
     (path) => {
       expect(() =>
@@ -90,7 +103,18 @@ describe("buildAllowedRequest", () => {
     },
   );
 
-  it.each(["", "/main", "main/", "main//next", ".", "..", "main/../next", "main?x=1"])(
+  it.each([
+    "",
+    "/main",
+    "main/",
+    "main//next",
+    ".",
+    "..",
+    "main/../next",
+    "main?x=1",
+    "release\u0085next",
+    "release\u009fnext",
+  ])(
     "rejects unsafe ref input %s",
     (ref) => {
       expect(() =>

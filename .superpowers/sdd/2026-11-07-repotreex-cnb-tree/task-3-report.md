@@ -55,3 +55,25 @@ Results:
 ## Concerns
 
 None for Task 3. DTO schema assumptions remain compile-time contracts and will be structurally validated at the provider boundary in Task 5 as planned.
+
+## Fix round 1
+
+Changed files:
+
+- `src/page/allowlist.ts`: extended control-character rejection through the Unicode C1 range U+0080-U+009F, while retaining C0 and U+007F rejection.
+- `tests/allowlist.test.ts`: added focused U+0085 and U+009F regression cases for repository, ref, and path inputs.
+- `.superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-3-report.md`: recorded this review fix and its validation evidence.
+
+Covering test file: `tests/allowlist.test.ts`.
+
+Exact validation command:
+
+```text
+npx --yes -p node@24 -c 'npm test -- tests/allowlist.test.ts && npm run typecheck && npm run lint'
+```
+
+Output:
+
+- Focused allowlist suite: 1 file passed, 49 tests passed.
+- TypeScript: application and tool/test scopes passed with no emit.
+- ESLint: passed for `src`, `tests`, and `scripts`.
