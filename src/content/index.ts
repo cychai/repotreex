@@ -15,7 +15,6 @@ const INSTANCE = Symbol.for("repotreex.instance");
 const SUSPENDED = Symbol.for("repotreex.suspended");
 declare const chrome: {
   runtime?: { id?: string };
-  storage: { local: PreferenceStorage };
 };
 
 function contextValid(): boolean {
@@ -28,11 +27,6 @@ export function bootstrapContentScript(target: Window, options: BootstrapOptions
   const wasSuspended = typeof previous === "object" && previous !== null
     && Object.getOwnPropertyDescriptor(previous, SUSPENDED)?.value === true;
   if (typeof previous === "object" && previous !== null && "destroy" in previous && typeof previous.destroy === "function") previous.destroy();
-  // Resolve Chrome storage on each operation so invalidation is detected safely.
-  const storage: PreferenceStorage = options.storage ?? {
-    async get(key) { return chrome.storage.local.get(key); },
-    async set(items) { await chrome.storage.local.set(items); },
-  };
   let controller: RepoTreeController | null = null;
   const valid = options.isContextValid ?? contextValid;
   let destroyed = false;
@@ -59,7 +53,12 @@ export function bootstrapContentScript(target: Window, options: BootstrapOptions
       const bridge = createBridgeClient(target, target.crypto.randomUUID());
       const provider = createSessionProvider(bridge);
       const store = createTreeStore(provider);
-      controller = createRepoTreeController({ window: target, provider, store, preferences: createPreferenceStore(storage) });
+      controller = createRepoTreeController({
+        window: target,
+        provider,
+        store,
+        preferences: createPreferenceStore(options.storage),
+      });
     }
     void controller.handleNavigation(new URL(target.location.href));
   };

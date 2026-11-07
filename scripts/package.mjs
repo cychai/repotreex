@@ -8,12 +8,6 @@ const projectRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-const extensionRoot = path.join(projectRoot, "dist", "extension");
-const archivePath = path.join(
-  projectRoot,
-  "dist",
-  `repotreex-${manifest.version}.zip`,
-);
 const stableTimestamp = new Date("2000-01-01T00:00:00.000Z");
 
 function run(command, args, options = {}) {
@@ -59,27 +53,48 @@ async function collectFiles(directory, prefix = "") {
   return paths;
 }
 
-await run(process.execPath, [path.join(projectRoot, "scripts", "build.mjs")], {
-  cwd: projectRoot,
-});
+/**
+ * @param {{ outputRoot?: string, callerTimeZone?: string }} [options]
+ */
+export async function buildPackage({
+  outputRoot = path.join(projectRoot, "dist"),
+  callerTimeZone = process.env.TZ,
+} = {}) {
+  const extensionRoot = path.join(outputRoot, "extension");
+  const archivePath = path.join(outputRoot, `repotreex-${manifest.version}.zip`);
+  const buildEnvironment = {
+    ...process.env,
+    ...(callerTimeZone === undefined ? {} : { TZ: callerTimeZone }),
+    REPOTREEX_OUTPUT_DIR: extensionRoot,
+  };
+  await run(process.execPath, [path.join(projectRoot, "scripts", "build.mjs")], {
+    cwd: projectRoot,
+    env: buildEnvironment,
+  });
 
-const files = (await collectFiles(extensionRoot)).sort((left, right) =>
-  left.localeCompare(right, "en"),
-);
-if (files.length === 0) {
-  throw new Error("Cannot package an empty extension build");
+  const files = (await collectFiles(extensionRoot)).sort((left, right) =>
+    left.localeCompare(right, "en"),
+  );
+  if (files.length === 0) {
+    throw new Error("Cannot package an empty extension build");
+  }
+
+  await Promise.all(
+    files.map((file) =>
+      utimes(path.join(extensionRoot, file), stableTimestamp, stableTimestamp),
+    ),
+  );
+  await rm(archivePath, { force: true });
+  await run("zip", ["-X", "-q", archivePath, ...files], {
+    cwd: extensionRoot,
+    env: {
+      ...process.env,
+      TZ: "UTC",
+    },
+  });
+  return { archivePath, extensionRoot, files };
 }
 
-await Promise.all(
-  files.map((file) =>
-    utimes(path.join(extensionRoot, file), stableTimestamp, stableTimestamp),
-  ),
-);
-await rm(archivePath, { force: true });
-await run("zip", ["-X", "-q", archivePath, ...files], {
-  cwd: extensionRoot,
-  env: {
-    ...process.env,
-    TZ: "UTC",
-  },
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await buildPackage();
+}

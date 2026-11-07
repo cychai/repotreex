@@ -1,25 +1,22 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
+import { buildPackage } from "../scripts/package.mjs";
 import packageMetadata from "../package.json";
 
-const execFileAsync = promisify(execFile);
-const projectRoot = path.resolve(import.meta.dirname, "..");
-const archivePath = path.join(projectRoot, "dist", "repotreex-0.1.0.zip");
-const packageScript = path.join(projectRoot, "scripts", "package.mjs");
-
 async function packageHash(timeZone: string): Promise<string> {
-  await execFileAsync(process.execPath, [packageScript], {
-    cwd: projectRoot,
-    env: { ...process.env, TZ: timeZone },
-  });
-
-  return createHash("sha256")
-    .update(await readFile(archivePath))
-    .digest("hex");
+  const outputRoot = await mkdtemp(path.join(tmpdir(), "repotreex-package-"));
+  const archivePath = path.join(outputRoot, "repotreex-0.1.0.zip");
+  try {
+    await buildPackage({ outputRoot, callerTimeZone: timeZone });
+    return createHash("sha256")
+      .update(await readFile(archivePath))
+      .digest("hex");
+  } finally {
+    await rm(outputRoot, { force: true, recursive: true });
+  }
 }
 
 describe("extension package", () => {

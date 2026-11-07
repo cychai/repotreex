@@ -4,5 +4,5 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node", "vitest/globals"]
   },
-  "include": ["tests/**/*.ts", "src/**/*.d.ts", "vitest.config.ts"]
+  "include": ["tests/**/*.ts", "src/**/*.d.ts", "scripts/**/*.d.mts", "vitest.config.ts"]
 }

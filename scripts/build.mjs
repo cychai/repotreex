@@ -8,7 +8,10 @@ const projectRoot = path.resolve(
   "..",
 );
 const sourceRoot = path.join(projectRoot, "src");
-const outputRoot = path.join(projectRoot, "dist", "extension");
+const configuredOutput = process.env.REPOTREEX_OUTPUT_DIR;
+const outputRoot = configuredOutput
+  ? path.resolve(configuredOutput)
+  : path.join(projectRoot, "dist", "extension");
 const requiredPaths = [
   "manifest.json",
   "assets/icon-16.png",
