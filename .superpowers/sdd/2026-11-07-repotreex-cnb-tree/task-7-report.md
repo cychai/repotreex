@@ -335,3 +335,223 @@ git commit --no-verify -F .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-7-
 The final response reports the resulting hash and completion; final git status
 is checked after the retry. Branch and worktree are kept as requested. No broad
 cleanup or change to hook configuration.
+
+## Fix round 1
+
+### Status and changed files
+
+Both review findings reproduced and fixed on top of `1f342bc` in the existing
+`feature/repotreex-cnb-tree` worktree. No subagents, original-checkout edits,
+provider/store API changes, dependencies, network calls, or persistent state.
+
+- `src/content/search.ts`: observe store promises directly, preserve all observed
+  batch failures across abort, reject known fatal failures promptly, and keep
+  late promise observers isolated from traversal state.
+- `tests/search.test.ts`: replace the obsolete fatal-drain assertion with prompt
+  rejection/detachment coverage; add 16 cases (67 -> 83) for auth clearing/abort,
+  non-auth notification/abort, simultaneous fatal/progress abort, first-error
+  precedence, never-settling siblings, and genuinely late success/rejection.
+- `.superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-7-report.md`: this appendix.
+
+This appendix supersedes the original report's fatal-error drain semantics and
+concern 5. Truncation-only draining remains unchanged.
+
+### Explicit error precedence and cancellation boundary
+
+1. A fatal is any non-cancellation rejection, including a rejection with
+   `undefined`. The existing boxed failure sentinel preserves exact identity.
+   Among observed failures, the first failure recorded in settlement/callback
+   processing order wins; subsequent cancellation cannot overwrite it.
+2. Attach fulfillment/rejection observers directly to the store-owned load
+   promise. The store rejects an auth operation before synchronously clearing
+   metadata/notifying subscribers; the rejection observer is therefore queued
+   before subscriber-driven signal abort wakes traversal. Returning that promise
+   through an intermediate adoption chain postponed observation and let abort
+   erase the settled auth failure. The new direct observer fixes that root cause
+   without adding a timer, grace period, or store error side channel.
+3. On wake, process the complete already-observed settlement inbox, including
+   the remainder of the spliced batch if a progress callback aborts. Abort stops
+   success discovery/progress but not error inspection. No early abort break
+   occurs before the inbox or inside the batch. Once the batch is inspected,
+   a known fatal rejects immediately; cancellation otherwise returns promptly.
+4. No asynchronous wait/drain follows a known fatal. A stalled unrelated request
+   cannot block rate-limit/compatibility/auth error delivery. New work is never
+   scheduled after fatal/cancellation. Finally removes the abort listener, nulls
+   all remaining request paths and settlement sinks, and clears queues, sets,
+   pending settlements, wake callback, and repository context.
+5. Late promise handlers are created by the module-local `observeDirectory`
+   helper and capture only the detachable request object. After cleanup they
+   observe both success/rejection without retaining the traversal callback,
+   snapshot, metadata, or calling progress/scheduling. Truly late results are
+   ignored; a failure already in the inbox/current batch is never discarded.
+6. Truncation is distinct: reaching maxNodes still stops scheduling and waits for
+   current in-flight work to settle, saturating counts and reporting progress.
+   A fatal during that drain exits promptly rather than waiting for remaining
+   requests. Existing truncation drain/non-abort/ceiling tests remain green.
+7. The only new catch surrounds synchronous dispatch/store invocation and reports
+   the actual thrown value into the settlement inbox. It does not convert an
+   unexpected failure into success. Existing observer exceptions still propagate.
+
+### TDD red/green evidence
+
+Used test-driven-development, receiving-code-review, verification-before-completion,
+and git-commit guidance. Reviewed real store rejection-before-clearing behavior
+and both findings before implementing. Read-only commit evidence script confirmed
+the named branch, `1f342bc` HEAD, and a clean baseline.
+
+```text
+$ npx --yes -p node@24 -c 'npm test -- tests/search.test.ts'
+> repotreex@0.1.0 test
+> vitest run tests/search.test.ts
+RUN v5.1.0
+Test Files 1 passed (1)
+Tests 67 passed (67)
+Start at 14:26:00
+Duration 1.48s
+Exit 0
+```
+
+Added regression tests and strengthened the formerly draining test before any
+source edits. RED reproduced both findings:
+
+```text
+$ npx --yes -p node@24 -c 'npm test -- tests/search.test.ts'
+> repotreex@0.1.0 test
+> vitest run tests/search.test.ts
+RUN v5.1.0
+Test Files 1 failed (1)
+Tests 10 failed | 67 passed (77)
+FAIL rejects promptly after failure, detaches late rejections, and never starts a queued sibling
+Error: Test timed out in 5000ms.
+FAIL preserves settled signed-out when auth clearing aborts the traversal signal
+FAIL preserves settled forbidden when auth clearing aborts the traversal signal
+AssertionError: promise resolved { loadedNodes: 0, truncated: false, cancelled: true } instead of rejecting
+FAIL preserves a simultaneous fatal sibling when a progress callback aborts
+(rate-limited, compatibility, unexpected Error, undefined: four cases)
+AssertionError: promise resolved { loadedNodes: 4, truncated: false, cancelled: true } instead of rejecting
+FAIL delivers rate-limited/compatibility/network without waiting for a never-settling sibling
+(three cases)
+AssertionError: expected undefined to be the original RepositoryError
+Start at 14:26:55
+Duration 7.50s
+Exit 1
+```
+
+GREEN after the scoped production fix:
+
+```text
+$ npx --yes -p node@24 -c 'npm test -- tests/search.test.ts && npm run typecheck && npm run lint'
+Test Files 1 passed (1)
+Tests 77 passed (77)
+Start at 14:27:30
+Duration 2.17s
+> tsc --noEmit && tsc --noEmit -p tsconfig.tools.json
+> eslint src tests scripts
+Exit 0
+```
+
+Six further self-review characterization cases verify first-observed error
+precedence, both non-auth notification abort paths, both auth sibling/progress
+abort paths, and late success detachment. These passed on the fix without any
+additional production changes. They supplement, not replace, the ten failing
+regressions above.
+
+### Exact final commands and outputs
+
+Required direct validation after all source/test edits:
+
+```text
+$ npx --yes -p node@24 -c 'npm test -- tests/search.test.ts && npm run typecheck && npm run lint'
+> repotreex@0.1.0 test
+> vitest run tests/search.test.ts
+RUN v5.1.0 /Users/bytedance/.codex/worktrees/repotreex-cnb-tree/repotreex
+Test Files 1 passed (1)
+Tests 83 passed (83)
+Start at 14:28:14
+Duration 2.47s
+> repotreex@0.1.0 typecheck
+> tsc --noEmit && tsc --noEmit -p tsconfig.tools.json
+> repotreex@0.1.0 lint
+> eslint src tests scripts
+Exit 0
+
+$ npx --yes -p node@24 -c 'npm test && esbuild src/content/search.ts --bundle --platform=browser --target=chrome120 --format=iife --log-level=info > /dev/null'
+> repotreex@0.1.0 test
+> vitest run
+RUN v5.1.0 /Users/bytedance/.codex/worktrees/repotreex-cnb-tree/repotreex
+Test Files 9 passed (9)
+Tests 551 passed (551)
+Start at 14:28:41
+Duration 2.69s
+Standalone Chrome 120 search bundling: no output, successful
+Exit 0
+
+$ git diff --check
+(no output)
+Exit 0
+
+$ rg -n 'console|localStorage|sessionStorage|indexedDB|chrome\.storage|browser\.storage|cookie|fetch|setTimeout|addEventListener|removeEventListener' src/content/search.ts
+109:    signal?.addEventListener("abort", onAbort, { once: true });
+183:    signal?.removeEventListener("abort", onAbort);
+Exit 0
+```
+
+No unhandled rejections/errors in GREEN, including genuinely late fatal errors
+after cancellation/failure. Full suite includes existing packaging regressions;
+direct Chrome 120 bundling covers the changed module independently of placeholder
+bootstrap. No build-tool, manifest, package, or UI changes needed in this fix.
+
+### Self-review and concerns
+
+- Full source/test diff reviewed. Every observed batch element releases its path
+  and sink even after abort; remaining active requests release both in finally.
+- Both auth errors survive store clearing/signal abort; fatal siblings survive
+  progress abort; `undefined` remains a real failure. First observed failure is
+  stable with multiple fatal siblings. No silent success fallback.
+- Never-settling siblings no longer delay fatal delivery. Late errors are handled
+  without unhandled rejection, and late successes cannot publish traversal progress
+  or enqueue their children. Abort listeners detach on fatal exit.
+- Truncation drain behavior, FIFO/concurrency/limits, pure filename search,
+  normalized provider/store types, and privacy boundaries are unchanged.
+- No remaining blocking findings in this fix scope. Shared store requests cannot
+  be physically aborted by traversal's consumer-only signal and may update the
+  current cache after traversal ends; store lifecycle clearing remains the auth/
+  navigation boundary. Atomic listing ingestion can still cache beyond maxNodes.
+- No live CNB/browser verification claimed. Branch/worktree preserved; no push.
+
+### Commit
+
+Only search.ts, search.test.ts, and this report are staged. Commit title:
+`fix: preserve fatal traversal errors across cancellation`. Normal commit is
+attempted first; only the confirmed missing hook permits the authorized bypass.
+Final commit hash is reported in the final response, avoiding self-reference.
+
+```text
+$ git diff --cached --check
+(no output)
+Exit 0
+
+$ git status --short
+M  .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-7-report.md
+M  src/content/search.ts
+M  tests/search.test.ts
+
+$ git diff --cached --name-status
+M .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-7-report.md
+M src/content/search.ts
+M tests/search.test.ts
+
+$ git commit -F .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-7-fix-round-1-commit-message.txt
+bash: script/pre_commit_checks.sh: No such file or directory
+Exit 1
+```
+
+Normal commit failed only for the confirmed missing script; no commit created.
+Required checks were run directly. Authorized retry:
+
+```text
+git commit --no-verify -F .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-7-fix-round-1-commit-message.txt
+```
+
+Task-local ignored message file is not staged. Final status is checked after
+the retry; no other files or generated artifacts included.

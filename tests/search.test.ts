@@ -435,7 +435,7 @@ describe("bounded full-tree loading", () => {
     await expect(loadFullTree({ getSnapshot: store.getSnapshot, loadDirectory() { throw error; } })).rejects.toBe(error);
   });
 
-  it("drains other in-flight requests after failure and never starts a queued sibling", async () => {
+  it("rejects promptly after failure, detaches late rejections, and never starts a queued sibling", async () => {
     const a = deferred<DirectoryListing>();
     const b = deferred<DirectoryListing>();
     const calls: string[] = [];
@@ -446,16 +446,189 @@ describe("bounded full-tree loading", () => {
         : path === "a" ? a.promise : b.promise;
     });
     const error = new RepositoryError("rate-limited", { status: 429 });
-    const traversal = loadFullTree(store, { concurrency: 2, onProgress: (value) => progress.push(value) });
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const traversal = loadFullTree(store, { concurrency: 2, signal: controller.signal, onProgress: (value) => progress.push(value) });
     const rejection = expect(traversal).rejects.toBe(error);
     await vi.waitFor(() => expect(calls).toEqual(["", "a", "b"]));
     a.reject(error);
     await vi.waitFor(() => expect(progress).toHaveLength(2));
     expect(progress[1]).toEqual({ loadedNodes: 3, queuedDirectories: 1, activeRequests: 1 });
-    b.resolve(listing("b", [entry("b/file")]));
     await rejection;
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    b.reject(new RepositoryError("network"));
+    await vi.waitFor(() => expect(store.getSnapshot().nodesByPath.b.error?.code).toBe("network"));
     expect(calls).toEqual(["", "a", "b"]);
-    expect(progress.at(-1)?.activeRequests).toBe(0);
+    expect(progress).toHaveLength(2);
+  });
+
+  it.each(["signed-out", "forbidden"] as const)("preserves settled %s when auth clearing aborts the traversal signal", async (code) => {
+    const response = deferred<DirectoryListing>();
+    const controller = new AbortController();
+    const progress: TraversalProgress[] = [];
+    const store = setup(() => response.promise);
+    store.subscribe(() => {
+      if (store.getSnapshot().repo === null) controller.abort();
+    });
+    const error = new RepositoryError(code, { status: code === "signed-out" ? 401 : 403 });
+    const traversal = loadFullTree(store, { signal: controller.signal, onProgress: (value) => progress.push(value) });
+    const rejection = expect(traversal).rejects.toBe(error);
+    await vi.waitFor(() => expect(store.getSnapshot().nodesByPath[""].loading).toBe(true));
+    response.reject(error);
+    await rejection;
+    expect(controller.signal.aborted).toBe(true);
+    expect(store.getSnapshot().nodesByPath).toEqual({});
+    expect(progress).toEqual([]);
+  });
+
+  it.each(["rate-limited", "compatibility"] as const)("preserves settled %s when its error notification aborts", async (code) => {
+    const response = deferred<DirectoryListing>();
+    const controller = new AbortController();
+    const store = setup(() => response.promise);
+    store.subscribe(() => {
+      if (store.getSnapshot().nodesByPath[""]?.error) controller.abort();
+    });
+    const error = new RepositoryError(code);
+    const traversal = loadFullTree(store, { signal: controller.signal });
+    const rejection = expect(traversal).rejects.toBe(error);
+    await vi.waitFor(() => expect(store.getSnapshot().nodesByPath[""].loading).toBe(true));
+    response.reject(error);
+    await rejection;
+    expect(controller.signal.aborted).toBe(true);
+  });
+
+  it.each(["signed-out", "forbidden"] as const)("preserves simultaneous %s despite progress abort after sibling cancellation", async (code) => {
+    const a = deferred<DirectoryListing>();
+    const b = deferred<DirectoryListing>();
+    const controller = new AbortController();
+    const progress: TraversalProgress[] = [];
+    const store = setup((_repo, _ref, path) => path === "" ? Promise.resolve(listing(path, [entry("a", "directory"), entry("b", "directory")]))
+      : path === "a" ? a.promise : b.promise);
+    const error = new RepositoryError(code);
+    const traversal = loadFullTree(store, { concurrency: 2, signal: controller.signal, onProgress: (value) => {
+      progress.push(value);
+      if (progress.length === 2) controller.abort();
+    } });
+    const rejection = expect(traversal).rejects.toBe(error);
+    await vi.waitFor(() => expect(store.getSnapshot().nodesByPath.b.loading).toBe(true));
+    a.resolve(listing("a"));
+    b.reject(error);
+    await rejection;
+    expect(controller.signal.aborted).toBe(true);
+    expect(progress).toHaveLength(2);
+    expect(store.getSnapshot().nodesByPath).toEqual({});
+  });
+
+  it("retains the first observed fatal when multiple fatal siblings and progress abort coincide", async () => {
+    const a = deferred<DirectoryListing>();
+    const b = deferred<DirectoryListing>();
+    const controller = new AbortController();
+    const progress: TraversalProgress[] = [];
+    const store = setup((_repo, _ref, path) => path === "" ? Promise.resolve(listing(path, [entry("a", "directory"), entry("b", "directory")]))
+      : path === "a" ? a.promise : b.promise);
+    const first = new RepositoryError("rate-limited");
+    const traversal = loadFullTree(store, { concurrency: 2, signal: controller.signal, onProgress: (value) => {
+      progress.push(value);
+      if (progress.length === 2) controller.abort();
+    } });
+    const rejection = expect(traversal).rejects.toBe(first);
+    await vi.waitFor(() => expect(store.getSnapshot().nodesByPath.b.loading).toBe(true));
+    a.reject(first);
+    b.reject(new RepositoryError("compatibility"));
+    await rejection;
+    expect(progress).toHaveLength(2);
+  });
+
+  it("does not publish a late success or traverse its children after fatal rejection", async () => {
+    const a = deferred<DirectoryListing>();
+    const b = deferred<DirectoryListing>();
+    const calls: string[] = [];
+    const progress: TraversalProgress[] = [];
+    const store = setup((_repo, _ref, path) => {
+      calls.push(path);
+      return path === "" ? Promise.resolve(listing(path, [entry("a", "directory"), entry("b", "directory")]))
+        : path === "a" ? a.promise : b.promise;
+    });
+    const error = new RepositoryError("compatibility");
+    const traversal = loadFullTree(store, { concurrency: 2, onProgress: (value) => progress.push(value) });
+    const rejection = expect(traversal).rejects.toBe(error);
+    await vi.waitFor(() => expect(calls).toEqual(["", "a", "b"]));
+    a.reject(error);
+    await rejection;
+    b.resolve(listing("b", [entry("b/child", "directory")]));
+    await vi.waitFor(() => expect(store.getSnapshot().nodesByPath.b.loaded).toBe(true));
+    expect(calls).toEqual(["", "a", "b"]);
+    expect(progress).toHaveLength(2);
+  });
+
+  it.each([new RepositoryError("rate-limited"), new RepositoryError("compatibility"), new Error("synthetic fatal"), undefined])(
+    "preserves a simultaneous fatal sibling when a progress callback aborts (%s)", async (error) => {
+      const a = deferred<DirectoryListing>();
+      const b = deferred<DirectoryListing>();
+      const controller = new AbortController();
+      const progress: TraversalProgress[] = [];
+      const calls: string[] = [];
+      const store = setup((_repo, _ref, path) => {
+        calls.push(path);
+        return path === "" ? Promise.resolve(listing(path, ["a", "b", "c"].map((name) => entry(name, "directory"))))
+          : path === "a" ? a.promise : b.promise;
+      });
+      const traversal = loadFullTree(store, { concurrency: 2, signal: controller.signal, onProgress: (value) => {
+        progress.push(value);
+        if (progress.length === 2) controller.abort();
+      } });
+      const rejection = expect(traversal).rejects.toBe(error);
+      await vi.waitFor(() => expect(calls).toEqual(["", "a", "b"]));
+      a.resolve(listing("a", [entry("a/file")]));
+      b.reject(error);
+      await rejection;
+      expect(controller.signal.aborted).toBe(true);
+      expect(calls).toEqual(["", "a", "b"]);
+      expect(progress).toHaveLength(2);
+    },
+  );
+
+  it.each(["rate-limited", "compatibility", "network"] as const)("delivers %s without waiting for a never-settling sibling", async (code) => {
+    const a = deferred<DirectoryListing>();
+    const calls: string[] = [];
+    const store = setup((_repo, _ref, path) => {
+      calls.push(path);
+      return path === "" ? Promise.resolve(listing(path, ["a", "b", "c"].map((name) => entry(name, "directory"))))
+        : path === "a" ? a.promise : new Promise<DirectoryListing>(() => {});
+    });
+    const error = new RepositoryError(code);
+    let outcome: { error: unknown } | undefined;
+    const observation = loadFullTree(store, { concurrency: 2 }).then(
+      () => { throw new Error("Unexpected traversal success"); },
+      (received: unknown) => { outcome = { error: received }; },
+    );
+    await vi.waitFor(() => expect(calls).toEqual(["", "a", "b"]));
+    a.reject(error);
+    await vi.waitFor(() => expect(outcome?.error).toBe(error), { timeout: 200 });
+    await observation;
+    expect(calls).toEqual(["", "a", "b"]);
+    expect(store.getSnapshot().nodesByPath.b.loading).toBe(true);
+  });
+
+  it("ignores a fatal result genuinely arriving after progress cancellation", async () => {
+    const a = deferred<DirectoryListing>();
+    const b = deferred<DirectoryListing>();
+    const controller = new AbortController();
+    const progress: TraversalProgress[] = [];
+    const store = setup((_repo, _ref, path) => path === "" ? Promise.resolve(listing(path, [entry("a", "directory"), entry("b", "directory")]))
+      : path === "a" ? a.promise : b.promise);
+    const traversal = loadFullTree(store, { concurrency: 2, signal: controller.signal, onProgress: (value) => {
+      progress.push(value);
+      if (progress.length === 2) {
+        controller.abort();
+        b.reject(new RepositoryError("rate-limited"));
+      }
+    } });
+    await vi.waitFor(() => expect(store.getSnapshot().nodesByPath.b.loading).toBe(true));
+    a.resolve(listing("a"));
+    await expect(traversal).resolves.toMatchObject({ cancelled: true });
+    await vi.waitFor(() => expect(store.getSnapshot().nodesByPath.b.error?.code).toBe("rate-limited"));
+    expect(progress).toHaveLength(2);
   });
 
   it.each(["signed-out", "forbidden"] as const)("preserves %s ahead of sibling cancellation and clears the real store", async (code) => {

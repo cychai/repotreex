@@ -43,6 +43,14 @@ export function matchLoadedNodes(snapshot: TreeSnapshot, query: string): LoadedN
 type DirectoryRequest = { path: string | null; publish: ((settlement: DirectorySettlement) => void) | null };
 type DirectorySettlement = { request: DirectoryRequest } & ({ ok: true } | { ok: false; error: unknown });
 
+function observeDirectory(request: DirectoryRequest, load: Promise<void>): void {
+  // These late continuations capture only the detachable request, not call state.
+  void load.then(
+    () => request.publish?.({ request, ok: true }),
+    (error: unknown) => request.publish?.({ request, ok: false, error }),
+  );
+}
+
 function isCancellation(error: unknown): boolean {
   return error instanceof RepositoryError && error.code === "cancelled"
     || (error instanceof Error || error instanceof DOMException) && error.name === "AbortError";
@@ -117,22 +125,23 @@ export async function loadFullTree(store: Pick<TreeStore, "loadDirectory" | "get
         const path = queue[cursor++];
         const request: DirectoryRequest = { path, publish };
         active.add(request);
-        // Capture synchronous store exceptions and observe late rejections. The
-        // detachable sink keeps cancelled continuations from retaining call state.
+        // Attach directly: promise adoption would postpone observing an auth
+        // rejection until after the store's synchronous clearing/abort wakes us.
         void Promise.resolve().then(() => {
-          if (request.path === null || cancelled || !currentSnapshot()) throw new RepositoryError("cancelled");
-          return store.loadDirectory(request.path);
-        }).then(
-          () => request.publish?.({ request, ok: true }),
-          (error: unknown) => request.publish?.({ request, ok: false, error }),
-        );
+          try {
+            if (request.path === null || cancelled || !currentSnapshot()) throw new RepositoryError("cancelled");
+            observeDirectory(request, store.loadDirectory(request.path));
+          } catch (error) {
+            request.publish?.({ request, ok: false, error });
+          }
+        });
       }
       if (active.size === 0) break;
       if (settlements.length === 0 && !signal?.aborted) await new Promise<void>((resolve) => { wake = resolve; });
       wake = undefined;
-      if (signal?.aborted) break;
       // Drain every already-settled directory before refilling concurrency slots.
-      // Otherwise a simultaneous ceiling/failure could dispatch one extra request.
+      // Even after abort, inspect the entire observed batch for fatal failures;
+      // only genuinely late continuations are detached without inspection.
       for (const settlement of settlements.splice(0)) {
         const { request } = settlement;
         active.delete(request);
@@ -156,16 +165,17 @@ export async function loadFullTree(store: Pick<TreeStore, "loadDirectory" | "get
             }
           }
         }
-        try {
-          onProgress?.({ loadedNodes, queuedDirectories: queue.length - cursor, activeRequests: active.size });
-        } catch (error) {
-          failure ??= { error };
+        if (!signal?.aborted) {
+          try {
+            onProgress?.({ loadedNodes, queuedDirectories: queue.length - cursor, activeRequests: active.size });
+          } catch (error) {
+            failure ??= { error };
+          }
         }
-        if (signal?.aborted) break;
       }
-      // At truncation or failure, drain the requests already dispatched but never
-      // schedule another directory. A fatal rejection still wins over cancellation.
-      if (signal?.aborted) break;
+      // Truncation alone drains in-flight work. Fatal failure/cancellation exits
+      // promptly, so an unrelated stalled request cannot block error delivery.
+      if (failure || cancelled) break;
     }
     if (failure) throw failure.error;
     return { loadedNodes, truncated, cancelled };
