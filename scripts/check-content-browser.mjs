@@ -21,7 +21,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, red
 page.on("pageerror", (error) => errors.push(error.message));
 page.on("console", (message) => {
   if (!['error', 'warning'].includes(message.type())) return;
-  if (/^Failed to load resource: the server responded with a status of (401|429) /.test(message.text())) expectedHttpDiagnostics.push(message.text());
+  if (/^Failed to load resource: the server responded with a status of (401|429|503) /.test(message.text())) expectedHttpDiagnostics.push(message.text());
   else errors.push(message.text());
 });
 await page.route("**/*", async (route) => {
@@ -41,6 +41,7 @@ await page.route("**/*", async (route) => {
   if (mode === "delay" && path === "docs") { delayed = route; return; }
   if (mode === "auth" && path === "docs") { await route.fulfill({ status: 401, json: {} }); return; }
   if (mode === "rate" && path === "docs") { await route.fulfill({ status: 429, json: {} }); return; }
+  if (mode === "server" && path === "docs") { await route.fulfill({ status: 503, json: {} }); return; }
   const entry = (path, type = "blob") => ({ path, type, name: path.split("/").at(-1), sha: "synthetic-entry" });
   const entries = path === "" ? [entry("src", "tree"), entry("docs", "tree"), entry("a.ts"), entry("b.ts")]
     : path === "src" ? url.searchParams.get("ref") === "dev" ? [] : [entry("src/a b.ts"), entry("src/nested", "tree")]
@@ -69,18 +70,25 @@ const install = async () => {
     frameId: frameTree.frame.id, worldName: "RepoTreeX synthetic content", grantUniveralAccess: false,
   }));
   await evaluate(`globalThis.syntheticRoots = []; globalThis.syntheticStored = {};
-    globalThis.syntheticWrites = []; globalThis.syntheticChannels = [];
+    globalThis.syntheticWrites = []; globalThis.syntheticChannels = []; globalThis.syntheticResponses = [];
+    globalThis.syntheticFailSaves = 0; globalThis.syntheticHoldSaves = false; globalThis.syntheticSaveGates = [];
     const attach = Element.prototype.attachShadow;
     Element.prototype.attachShadow = function(options) { const root = attach.call(this, options); if (this.id === 'repotreex-root') syntheticRoots.push(root); return root; };
     globalThis.chrome = { runtime: { id: 'synthetic-extension' }, storage: { local: {
       async get() { return structuredClone(syntheticStored); },
-      async set(items) { syntheticWrites.push(structuredClone(items)); Object.assign(syntheticStored, items); }
+      async set(items) {
+        syntheticWrites.push(structuredClone(items));
+        if (syntheticFailSaves > 0) { syntheticFailSaves--; throw new Error('synthetic storage unavailable'); }
+        if (syntheticHoldSaves) await new Promise(resolve => syntheticSaveGates.push(resolve));
+        Object.assign(syntheticStored, items);
+      }
     } } };
     window.addEventListener('repotreex:request', event => syntheticChannels.push(event.detail.channel));
+    window.addEventListener('repotreex:response', event => syntheticResponses.push({channel:event.detail.channel,status:event.detail.status}));
     Object.defineProperty(document, 'readyState', {value:'loading', configurable:true});`);
   await evaluate(content);
   await page.addScriptTag({ content: bridge });
-  await evaluate("document.dispatchEvent(new Event('DOMContentLoaded'))");
+  await evaluate("Object.defineProperty(document, 'readyState', {value:'complete', configurable:true}); document.dispatchEvent(new Event('DOMContentLoaded'))");
   await wait(`${root}?.querySelector('[aria-selected="true"]')?.dataset.path === 'src/nested/app.ts'`);
 };
 try {
@@ -110,6 +118,59 @@ try {
     { "repotreex.preferences": { panelOpen: false, panelWidth: 300 } },
     { "repotreex.preferences": { panelOpen: true, panelWidth: 300 } },
   ]);
+  // Fail open-state persistence, then recover with a width change: the later
+  // write must contain both intentions, with the notice retained while pending.
+  await evaluate(`syntheticFailSaves=1; syntheticHoldSaves=true;
+    ${root}.querySelector('[aria-label="Collapse repository tree"]').click();
+    ${root}.querySelector('.resizer').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));`);
+  await wait("syntheticSaveGates.length === 1");
+  await wait(`${root}.querySelector('.status').textContent.includes('not saved')`);
+  assert.deepEqual(await evaluate("syntheticWrites.at(-1)"), { "repotreex.preferences": { panelOpen: false, panelWidth: 316 } });
+  await evaluate("syntheticHoldSaves=false; syntheticSaveGates.shift()()");
+  await wait(`${root}.querySelector('.status').textContent.includes('not saved') === false`);
+  assert.deepEqual(await evaluate("syntheticStored"), { "repotreex.preferences": { panelOpen: false, panelWidth: 316 } });
+  await evaluate(`${root}.querySelector('[aria-label="Open repository tree"]').click()`);
+  await wait("syntheticStored['repotreex.preferences'].panelOpen === true");
+  // Detached same-session traversal still owns the throttle, not selection.
+  mode = "delay"; await evaluate(`${root}.querySelector('[aria-label="Load full tree for search"]').click()`);
+  await wait(`${root}.querySelector('[data-path="docs"]').getAttribute('aria-busy') === 'true'`);
+  await page.evaluate(() => history.pushState({}, "", "/acme/platform/repo/-/blob/release/v1/patch/a.ts"));
+  await wait(`${root}.querySelector('[aria-selected="true"]')?.dataset.path === 'a.ts'`);
+  assert.ok(delayed); await delayed.fulfill({ status: 429, json: {} }); delayed = undefined;
+  await wait(`${root}.querySelector('[aria-label="Load full tree for search"]').disabled === true`);
+  const throttledCalls = apiRequests.length;
+  await evaluate(`${root}.querySelector('[aria-label="Load full tree for search"]').click()`);
+  assert.equal(apiRequests.length, throttledCalls);
+  mode = "normal"; await evaluate(`${root}.querySelector('[data-action="retry-directory"][data-path="docs"]').click()`);
+  await wait(`${root}.querySelector('[aria-label="Load full tree for search"]').disabled === false`);
+  await evaluate(`${root}.querySelector('[aria-label="Refresh repository tree"]').click()`);
+  await wait(`${root}.querySelector('[aria-selected="true"]')?.dataset.path === 'a.ts'`);
+  // A matching failed ancestor retry resumes reveal; full search is not the
+  // owner and must leave that failure visible even after loading the directory.
+  mode = "rate";
+  await page.evaluate(() => history.pushState({}, "", "/acme/platform/repo/-/blob/release/v1/patch/docs/guide.md"));
+  await wait(`${root}.querySelector('[aria-label="Retry repository tree"]') !== null`);
+  mode = "normal"; await evaluate(`${root}.querySelector('[data-action="retry-directory"][data-path="docs"]').click()`);
+  await wait(`${root}.querySelector('[aria-selected="true"]')?.dataset.path === 'docs/guide.md'`);
+  assert.equal(await evaluate(`${root}.querySelector('[aria-label="Retry repository tree"]')`), null);
+  await page.evaluate(() => history.pushState({}, "", "/acme/platform/repo/-/blob/release/v1/patch/b.ts"));
+  await wait(`${root}.querySelector('[aria-selected="true"]')?.dataset.path === 'b.ts'`);
+  await evaluate(`${root}.querySelector('[aria-label="Refresh repository tree"]').click()`);
+  await wait(`${root}.querySelector('[aria-selected="true"]')?.dataset.path === 'b.ts'`);
+  mode = "server";
+  await page.evaluate(() => history.pushState({}, "", "/acme/platform/repo/-/blob/release/v1/patch/docs/guide.md"));
+  await wait(`${root}.querySelector('[aria-label="Retry repository tree"]') !== null`);
+  mode = "normal";
+  await evaluate(`${root}.querySelector('[aria-label="Load full tree for search"]').click()`);
+  await wait(`${root}.querySelector('[aria-label="Load full tree for search"]') !== null && ${root}.querySelector('[data-path="docs/guide.md"]') !== null`);
+  assert.notEqual(await evaluate(`${root}.querySelector('[aria-label="Retry repository tree"]')`), null);
+  assert.equal(await evaluate(`${root}.querySelector('[aria-selected="true"]')`), null);
+  await evaluate(`${root}.querySelector('[aria-label="Retry repository tree"]').click()`);
+  await wait(`${root}.querySelector('[aria-selected="true"]')?.dataset.path === 'docs/guide.md'`);
+  await page.evaluate(() => history.pushState({}, "", "/acme/platform/repo/-/blob/release/v1/patch/b.ts"));
+  await wait(`${root}.querySelector('[aria-selected="true"]')?.dataset.path === 'b.ts'`);
+  await evaluate(`${root}.querySelector('[aria-label="Refresh repository tree"]').click()`);
+  await wait(`${root}.querySelector('[aria-selected="true"]')?.dataset.path === 'b.ts'`);
   mode = "rate";
   await evaluate(`${root}.querySelector('[aria-label="Load full tree for search"]').click()`);
   await wait(`${root}.querySelector('[aria-label="Retry full-tree search"]') !== null`);
@@ -118,6 +179,39 @@ try {
   await wait(`${root}.querySelector('[aria-label="Load full tree for search"]')?.disabled === false`);
   await evaluate(`${root}.querySelector('[aria-label="Refresh repository tree"]').click()`);
   await wait(`${root}.querySelector('[aria-selected="true"]')?.dataset.path === 'b.ts'`);
+  // Persisted lifecycle events exercise the production BFCache resume owner.
+  // This is not a claim that this intercepted page is eligible for real BFCache.
+  mode = "delay"; await evaluate(`${root}.querySelector('[aria-label="Load full tree for search"]').click()`);
+  await wait(`${root}.querySelector('[data-path="docs"]').getAttribute('aria-busy') === 'true'`);
+  const lifetimes = await evaluate("new Set(syntheticChannels).size");
+  const outgoingChannel = await evaluate("syntheticChannels.at(-1)");
+  const roots = await evaluate("syntheticRoots.length");
+  await evaluate("window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}))");
+  assert.equal(await evaluate("document.getElementById('repotreex-root')"), null);
+  assert.equal(await evaluate(`${root}.querySelectorAll('[data-path]').length`), 0);
+  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).paddingLeft), "18px");
+  const suspendedCalls = apiRequests.length;
+  await evaluate("window.dispatchEvent(new Event('repotreex:navigation'))");
+  assert.equal(apiRequests.length, suspendedCalls);
+  mode = "normal";
+  await evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})); window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}))");
+  await wait(`${root}.querySelector('[aria-selected="true"]')?.dataset.path === 'b.ts'`);
+  assert.equal(await evaluate("syntheticRoots.length"), roots + 1);
+  assert.equal(await evaluate("new Set(syntheticChannels).size"), lifetimes + 1);
+  assert.equal(await evaluate("document.querySelectorAll('#repotreex-root').length"), 1);
+  assert.ok(delayed); await delayed.fulfill({ status: 429, json: {} }); delayed = undefined;
+  await wait(`syntheticResponses.some(response=>response.channel===${JSON.stringify(outgoingChannel)} && response.status===429)`);
+  assert.equal(await evaluate(`${root}.querySelector('[aria-label="Load full tree for search"]').disabled`), false);
+  assert.equal(await evaluate(`${root}.querySelector('[aria-selected="true"]').dataset.path`), "b.ts");
+  await evaluate("window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}))");
+  const suspendedRoots = await evaluate("syntheticRoots.length");
+  await evaluate(content);
+  assert.equal(await evaluate("document.getElementById('repotreex-root')"), null);
+  await evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})); window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}))");
+  await wait(`${root}.querySelector('[aria-selected="true"]')?.dataset.path === 'b.ts'`);
+  assert.equal(await evaluate("syntheticRoots.length"), suspendedRoots + 1);
+  assert.equal(await evaluate("document.querySelectorAll('#repotreex-root').length"), 1);
+  assert.equal(await evaluate("new Set(syntheticChannels).size"), lifetimes + 2);
   mode = "delay"; await evaluate(`${root}.querySelector('[aria-label="Load full tree for search"]').click()`);
   await wait(`${root}.querySelector('[aria-label="Cancel full-tree search"]') !== null`);
   await page.evaluate(() => history.pushState({}, "", "/profile/me"));
@@ -163,6 +257,6 @@ try {
   await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
   assert.equal(await evaluate("Object.hasOwn(window, Symbol.for('repotreex.instance'))"), false);
   assert.deepEqual(errors, []);
-  assert.equal(expectedHttpDiagnostics.length, 2);
-  console.log("PASS built entry in Chromium MAIN/isolated worlds: nested/slash refs, sequential ancestors, SPA cache, search, open-only storage, refresh, traversal rate/retry/cancel, late data, canonical ref fallback, auth clearing, reinjection and invalidation; synthetic traffic only, no application console errors (expected injected 401/429 browser diagnostics).");
+  assert.equal(expectedHttpDiagnostics.length, 6);
+  console.log("PASS built entry in Chromium MAIN/isolated worlds: nested/slash refs, sequential ancestors, SPA cache, search, cumulative preference recovery, matching retry/reveal, search error ownership, late same-session 429 gating, BFCache persisted-event scrub/fresh-channel resume, refresh, traversal rate/retry/cancel, stale lifetime data, canonical ref fallback, auth clearing, reinjection and invalidation; synthetic traffic only, no application console errors (expected injected 401/429/503 browser diagnostics).");
 } finally { await cdp.detach(); await page.close(); await browser.close(); }

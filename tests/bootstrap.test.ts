@@ -80,4 +80,65 @@ describe("content-script lifetime", () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(t.requests).toHaveLength(0); expect(Object.hasOwn(t.target, Symbol.for("repotreex.instance"))).toBe(false);
   });
+  it("scrubs persisted pagehide and resumes exactly one fresh lifetime on persisted pageshow", async () => {
+    const t = setup(); await vi.waitFor(() => expect(t.requests.length).toBe(4));
+    const oldHost = t.target.document.getElementById("repotreex-root");
+    t.target.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    expect(oldHost?.isConnected).toBe(false);
+    expect(Object.hasOwn(t.target, Symbol.for("repotreex.instance"))).toBe(true);
+    t.target.dispatchEvent(new Event("repotreex:navigation"));
+    expect(t.requests).toHaveLength(4);
+    t.target.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    t.target.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await vi.waitFor(() => expect(t.requests.length).toBe(8));
+    expect(new Set(t.requests.map((request) => request.channel)).size).toBe(2);
+    expect(t.target.document.querySelectorAll("#repotreex-root")).toHaveLength(1);
+    t.target.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    t.target.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await vi.waitFor(() => expect(t.requests.length).toBe(12));
+    expect(new Set(t.requests.map((request) => request.channel)).size).toBe(3);
+    t.instance.destroy(); t.target.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    expect(t.target.document.getElementById("repotreex-root")).toBeNull(); expect(t.requests).toHaveLength(12);
+  });
+  it("replaces a suspended owner without reviving its old lifetime or leaking listeners", async () => {
+    const t = setup(); await vi.waitFor(() => expect(t.requests.length).toBe(4));
+    t.target.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    const next = bootstrapContentScript(t.target, t.options); cleanups.push(() => next.destroy());
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(t.requests).toHaveLength(4); expect(t.target.document.getElementById("repotreex-root")).toBeNull();
+    t.target.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await vi.waitFor(() => expect(t.requests.length).toBe(8));
+    t.instance.destroy();
+    expect(t.target.document.querySelectorAll("#repotreex-root")).toHaveLength(1);
+    next.destroy(); t.target.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    expect(t.requests).toHaveLength(8);
+  });
+  it("does not resume a suspended lifetime after extension invalidation", async () => {
+    const t = setup(); await vi.waitFor(() => expect(t.requests.length).toBe(4));
+    t.target.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })); t.invalidate();
+    t.target.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    expect(Object.hasOwn(t.target, Symbol.for("repotreex.instance"))).toBe(false);
+    expect(t.requests).toHaveLength(4); expect(t.target.document.getElementById("repotreex-root")).toBeNull();
+  });
+  it("persisted hide detaches outstanding bridge responses before a fresh lifetime resumes", async () => {
+    const t = setup(false);
+    const stopRequest = (event: Event) => event.stopImmediatePropagation();
+    t.target.addEventListener(BRIDGE_REQUEST_EVENT, stopRequest, { capture: true });
+    t.target.document.dispatchEvent(new Event("DOMContentLoaded"));
+    await vi.waitFor(() => expect(t.storage.get).toHaveBeenCalledTimes(1));
+    t.target.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    expect(t.target.document.getElementById("repotreex-root")).toBeNull();
+    t.target.removeEventListener(BRIDGE_REQUEST_EVENT, stopRequest, { capture: true });
+    t.target.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await vi.waitFor(() => expect(t.requests.length).toBe(4));
+    expect(t.target.document.querySelectorAll("#repotreex-root")).toHaveLength(1);
+  });
+  it.each(["pagehide", "repotreex:teardown"])("final %s destroys a suspended owner permanently", async (event) => {
+    const t = setup(true, true); await vi.waitFor(() => expect(t.requests.length).toBe(4));
+    t.target.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    t.target.dispatchEvent(new Event(event));
+    t.target.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    expect(Object.hasOwn(t.target, Symbol.for("repotreex.instance"))).toBe(false);
+    expect(t.target.document.getElementById("repotreex-root")).toBeNull(); expect(t.requests).toHaveLength(4);
+  });
 });

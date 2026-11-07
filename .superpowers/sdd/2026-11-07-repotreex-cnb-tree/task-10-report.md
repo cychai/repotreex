@@ -229,3 +229,144 @@ only with `bash: script/pre_commit_checks.sh: No such file or directory`.
 The user-authorized `git commit --no-verify -F` retry uses the same reviewed
 scope/message. No hook or Git configuration is modified; branch/worktree are
 preserved without push.
+
+## Fix round 1
+
+Implemented all four Important review findings on `feature/repotreex-cnb-tree`
+starting from `a19d289`, in the requested worktree only, without subagents.
+
+### Changed files and recovery behavior
+
+- `src/content/index.ts`: separate the Symbol-owned lifecycle listeners from
+  the disposable bridge/provider/store/controller lifetime. Persisted pagehide
+  destroys that lifetime, removes the host, scrubs sensitive state, aborts
+  pending isolated-side requests and stops the context timer. Only the lightweight
+  resume owner remains. Persisted pageshow creates a fresh lifetime and channel;
+  repeated pageshow does not duplicate it. Reinjection transfers the suspension
+  flag before destroying the previous owner. Final pagehide, development teardown
+  and invalidation permanently remove ownership/listeners. This supersedes the
+  original report's BFCache concern (boundary 3).
+- `src/content/controller.ts`: same-session load observers preserve late 429
+  throttling after navigation or traversal detachment, independently of operation
+  generation. Old sessions/lifetimes cannot throttle the replacement. Ordinary
+  traversal stays disabled until explicit retry/refresh; fixed error-code privacy
+  and immediate authorization clearing remain unchanged.
+- `src/content/controller.ts`: keep directory errors by path and reveal errors
+  by failed dependency plus navigation token, in memory only. Matching successful
+  directory recovery removes only its matching error and resumes sequential
+  reveal/selection if the current navigation still owns the blocked dependency.
+  Other directory errors remain, and full-tree success cannot clear directory-
+  or reveal-owned failures. Navigation/refresh/clearing discard outgoing owners.
+- `src/content/controller.ts`: serialized saves carry cumulative intended
+  open/width state instead of independent patches. A revision guard prevents an
+  older successful save from hiding the failure notice while newer intent is
+  still pending. A current cumulative success reconciles the normalized settings
+  and clears the fixed notice; read and write failures retain it. Destroyed
+  controllers skip queued saves and ignore late notice updates.
+- `tests/controller.test.ts`, `tests/bootstrap.test.ts`: integration regressions
+  using real controller/store/preferences/panel and bootstrap/bridge/provider
+  wiring with synthetic I/O only; 14 new controller and 6 new bootstrap cases.
+  Corrected the existing unrelated-directory-success fixture so its successful
+  directory is actually unrelated to the blocked reveal dependency.
+- `scripts/check-content-browser.mjs`: extend the production-bundle Chromium
+  probe for cumulative preference failure/pending-success recovery, detached
+  same-session 429 gating, matching directory retry plus resumed selection,
+  search-error ownership, persisted lifecycle scrub/fresh-channel resume and
+  stale old-lifetime responses observed through the actual MAIN bridge. Verify
+  reinjection while suspended and exactly one resume. Advance synthetic
+  `readyState` to complete at DOMContentLoaded, matching browser semantics for
+  the subsequent reinjection check. Existing panel browser probe is unchanged.
+
+No authoritative route, bridge, provider, store, search, preference or panel
+interface changes. Manifest/build/package files are unchanged; production
+content still bundles the real entry, and permissions remain only storage plus
+the exact CNB host. No OAuth, application metadata logging or metadata storage.
+
+### TDD evidence
+
+With regression tests added before production edits:
+
+```sh
+export PATH=/Users/bytedance/.npm/_npx/387698761821791d/node_modules/node/bin:$PATH
+node --version
+npm test -- tests/controller.test.ts tests/bootstrap.test.ts tests/panel.test.ts
+```
+
+Node reported `v24.22.2`. RED: **11 failed, 122 passed (133 total)**,
+reproducing lost BFCache ownership, three detached late-429 cases, three matching
+retry/reveal failures, stale directory errors, unrelated full-search error
+clearing, lost cumulative preferences and premature notice clearing. The
+suspended-reinjection regression was then tightened before its production
+adjustment: `npm test -- tests/bootstrap.test.ts` produced **1 failed, 13 passed**
+because reinjection incorrectly issued new requests while still suspended.
+
+The updated `node scripts/check-content-browser.mjs` also failed against the
+prior built entry before rebuilding, observing `panelOpen: true` instead of the
+required cumulative `panelOpen: false` after the failed open-state write.
+After the fixes, direct integration tests and the rebuilt-browser probe passed.
+
+### Final direct validation commands and results
+
+All commands ran from the requested worktree with this Node 24 PATH:
+
+```sh
+export PATH=/Users/bytedance/.npm/_npx/387698761821791d/node_modules/node/bin:$PATH
+npm test -- tests/controller.test.ts tests/bootstrap.test.ts tests/panel.test.ts
+npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run package
+unzip -t dist/repotreex-0.1.0.zip
+git diff --check
+shasum -a 256 dist/extension/content/index.js dist/repotreex-0.1.0.zip
+```
+
+- Focused: **138/138 passed** (62 controller, 16 bootstrap, 60 panel).
+- Full: **699/699 passed in 13 files**, including reproducible package-byte
+  identity across UTC and Asia/Shanghai; no unhandled test errors.
+- Both TypeScript scopes and ESLint passed, with no diagnostics.
+- Production build passed (content entry 89.0 kb); package passed and all eight
+  archive entries passed ZIP integrity. Diff whitespace check passed.
+- Content entry SHA-256:
+  `50704859be4a7f5ed78f23227bf47f94e407fdd44eff6f7ca9adb43b021d65f7`.
+- Package SHA-256:
+  `dafa117be5ed199dd7c2c3a7371d098bfe0103a4a6d8cddb442564e4e92bca6b`.
+
+```sh
+export PATH=/Users/bytedance/.npm/_npx/387698761821791d/node_modules/node/bin:$PATH
+export PLAYWRIGHT_MODULE_PATH=/Users/bytedance/.npm/_npx/fd3bca3c548369c0/node_modules/playwright/index.mjs
+export CHROMIUM_EXECUTABLE_PATH=/Users/bytedance/Library/Caches/ms-playwright/chromium_headless_shell-1254/chrome-headless-shell-mac-arm64/chrome-headless-shell
+node scripts/check-content-browser.mjs
+node scripts/check-panel-browser.mjs
+```
+
+Both probes passed against the final built artifacts. Content runs in a real
+Chromium isolated world, bridge in MAIN, with all HTTP locally intercepted and
+storage/runtime shims. No application console errors/warnings; exactly six
+expected browser resource diagnostics for synthetic 401/429/503 responses.
+All four existing panel browser regressions passed: hostile desktop/mobile
+cascade, important-padding restoration, focused-row visibility and empty/retry
+focus plus keyup isolation.
+
+### Self-review and remaining boundaries
+
+Reviewed the complete production/test/browser diff and manifest. Confirmed
+session guards, matching path/operation recovery, replacement listener ownership,
+no duplicate remounts, current-intent preference notice reconciliation, queued
+save teardown, fixed errors and unchanged canonical navigation/security contracts.
+All four requested fixes and their validations are complete.
+
+BFCache coverage dispatches real Chromium `PageTransitionEvent` objects with
+`persisted: true`; it verifies the built handlers, not eligibility or actual
+browser back/forward-cache admission. Live authenticated CNB and an installed
+extension remain untested. Shared same-session requests may finish into retained
+cache after file-only navigation; the unchanged bridge does not cancel MAIN-world
+fetches. Final teardown drops their isolated-side results. PreferenceStore has
+no abort contract: an already-issued open/width write may finish after teardown,
+but queued writes are dropped and late failures cannot revive UI/metadata.
+
+After the direct checks, the normal `git commit -F` attempt exited 1 with exactly
+`bash: script/pre_commit_checks.sh: No such file or directory`. The authorized
+`git commit --no-verify -F` retry uses the same reviewed six-file scope and
+message. No hook/config changes or push.

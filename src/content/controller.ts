@@ -28,6 +28,7 @@ function panelError(error: unknown): TreeDirectoryError {
 function isAuth(error: TreeDirectoryError): boolean {
   return error.code === "signed-out" || error.code === "forbidden";
 }
+type FailureOwner = { kind: "directory" | "reveal"; path: string } | { kind: "full-tree" };
 
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -87,6 +88,8 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
   let destroyed = false;
   let loading = false;
   let error: TreeDirectoryError | null = null;
+  const directoryErrors = new Map<string, TreeDirectoryError>();
+  let revealError: { path: string; token: number; error: TreeDirectoryError } | null = null;
   let query = "";
   let discovery: AbortController | null = null;
   let navigation: AbortController | null = null;
@@ -95,6 +98,7 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
   let panelPreferences: Preferences = { panelOpen: true, panelWidth: 300 };
   let preferenceLoad: Promise<void> | null = null;
   let preferenceSaves: Promise<void> = Promise.resolve();
+  let preferenceRevision = 0;
   let preferenceNotice: "preferences-load-failed" | "preferences-save-failed" | null = null;
   let routeNotice: "path-not-found" | "head-fallback" | null = null;
   let headFallback = false;
@@ -103,7 +107,8 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
   const current = (token: number) => !destroyed && token === generation;
   const render = () => {
     if (destroyed || !panel) return;
-    panel.render({ snapshot: store.getSnapshot(), refs, query, loading, error, fullTree,
+    panel.render({ snapshot: store.getSnapshot(), refs, query, loading,
+      error: error ?? revealError?.error ?? [...directoryErrors.values()].at(-1) ?? null, fullTree,
       fullTreeDisabled: rateLimited || loading,
       notices: [routeNotice, preferenceNotice].filter((notice) => notice !== null),
     });
@@ -118,9 +123,10 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
     // Drop controller state before store publication can render the outgoing refs.
     route = null; refs = []; refsRepo = null; head = "HEAD"; headFallback = false;
     query = ""; routeNotice = null; error = null; fullTree = undefined;
+    directoryErrors.clear(); revealError = null;
     panel?.clearSensitiveData(); store.clearSensitiveData();
   };
-  const failure = (value: unknown, token: number, full = false) => {
+  const failure = (value: unknown, token: number, owner?: FailureOwner) => {
     if (!current(token)) return;
     const next = panelError(value);
     if (next.code === "cancelled") return;
@@ -129,7 +135,9 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
       error = next; loading = false;
     } else {
       rateLimited ||= next.code === "rate-limited";
-      if (full) fullTree = { loading: false, error: next };
+      if (owner?.kind === "full-tree") fullTree = { loading: false, error: next };
+      else if (owner?.kind === "directory") directoryErrors.set(owner.path, next);
+      else if (owner?.kind === "reveal") revealError = { path: owner.path, token, error: next };
       else error = next;
     }
     render();
@@ -148,11 +156,15 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
       ...(typeof patch.panelWidth === "number" ? { panelWidth: patch.panelWidth } : {}),
     };
     panelPreferences = { ...panelPreferences, ...safePatch };
+    const intended = { ...panelPreferences };
+    const revision = ++preferenceRevision;
     preferenceSaves = preferenceSaves.then(async () => {
       if (destroyed) return;
       try {
-        await preferences.save(safePatch);
-        if (!destroyed) { preferenceNotice = null; render(); }
+        const saved = await preferences.save(intended);
+        if (!destroyed && revision === preferenceRevision) {
+          panelPreferences = saved; preferenceNotice = null; render();
+        }
       } catch {
         // Storage errors can contain arbitrary values. Show only a fixed notice.
         if (!destroyed) { preferenceNotice = "preferences-save-failed"; render(); }
@@ -162,24 +174,42 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
   const runDirectory = async (path: string, toggle: boolean) => {
     const session = sessionVersion;
     if (!route || destroyed) return;
+    const token = generation;
+    const priorError = directoryErrors.get(path);
+    const blockedReveal = revealError;
     try {
       if (toggle) await store.toggleDirectory(path);
       else await store.loadDirectory(path);
-      if (!destroyed && session === sessionVersion) render();
+      if (destroyed || session !== sessionVersion) return;
+      if (store.getSnapshot().nodesByPath[path]?.loaded) {
+        if (directoryErrors.get(path) === priorError) directoryErrors.delete(path);
+        if (blockedReveal?.path === path && blockedReveal.token === token && revealError === blockedReveal && current(token)) {
+          revealError = null; loading = true; render();
+          try { await reveal(token, getUrl()); }
+          finally { if (current(token)) loading = false; }
+        }
+      }
+      render();
     } catch (value) {
-      if (!destroyed && session === sessionVersion) failure(value, generation);
+      if (!destroyed && session === sessionVersion) failure(value, generation, { kind: "directory", path });
     }
   };
   const observeSessionLoad = async (work: Promise<void>, session: number) => {
     try { await work; }
     catch (value) {
-      if (!destroyed && session === sessionVersion && isAuth(panelError(value))) failure(value, generation);
+      if (!destroyed && session === sessionVersion) {
+        const next = panelError(value);
+        if (isAuth(next)) failure(value, generation);
+        // Session-wide throttling outlives the navigation/traversal that issued
+        // the shared load. Never attach its outgoing path to the new reveal.
+        else if (next.code === "rate-limited") { rateLimited = true; render(); }
+      }
       throw value;
     }
   };
   const startTraversal = async (retry = false) => {
     if (destroyed || !route || traversal || loading || rateLimited && !retry) return;
-    rateLimited = false; error = null;
+    if (retry) rateLimited = false;
     const token = generation; const controller = new AbortController(); traversal = controller;
     const session = sessionVersion;
     fullTree = { loading: true }; render();
@@ -191,7 +221,7 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
       } });
       if (current(token) && traversal === controller) { fullTree = { loading: false, result }; render(); }
     } catch (value) {
-      if (traversal === controller) failure(value, token, true);
+      if (traversal === controller) failure(value, token, { kind: "full-tree" });
     } finally { if (traversal === controller) traversal = null; }
   };
   const mount = () => {
@@ -224,13 +254,15 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
     if (!route?.ref) return;
     const active = route;
     const session = sessionVersion;
-    await observeSessionLoad(store.loadDirectory(""), session);
-    if (!current(token)) return;
     const path = active.filePath;
-    if (!path) { store.selectPath(null); return; }
-    const ancestors = path.split("/").slice(0, -1);
     let parent = "";
+    let rootLoaded = false;
     try {
+      await observeSessionLoad(store.loadDirectory(""), session);
+      if (!current(token)) return;
+      rootLoaded = true;
+      if (!path) { store.selectPath(null); return; }
+      const ancestors = path.split("/").slice(0, -1);
       for (const segment of ancestors) {
         parent = parent ? `${parent}/${segment}` : segment;
         const node = store.getSnapshot().nodesByPath[parent];
@@ -240,13 +272,16 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
       }
       const target = store.getSnapshot().nodesByPath[path];
       if (target?.kind === "directory") {
+        parent = path;
         await observeSessionLoad(target.expanded ? store.loadDirectory(path) : store.toggleDirectory(path), session);
         if (!current(token)) return;
       }
       store.selectPath(path);
     } catch (value) {
       if (!current(token)) return;
-      if (!(value instanceof RepositoryError) || value.code !== "not-found") throw value;
+      if (!rootLoaded || !(value instanceof RepositoryError) || value.code !== "not-found") {
+        failure(value, token, { kind: "reveal", path: parent }); return;
+      }
       store.selectPath(null); route = { ...active, filePath: null }; routeNotice = "path-not-found";
       const fallback = refRootUrl(active, active.ref ?? head); fallback.hash = "repotreex-path-not-found";
       if (url.href !== fallback.href) navigate(fallback.href);
@@ -258,6 +293,7 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
     navigation?.abort(); navigation = new AbortController();
     const signal = navigation.signal;
     discovery?.abort(); discovery = null; cancelTraversal(); error = null;
+    directoryErrors.clear(); revealError = null;
     const provisional = provisionalRoute(url);
     if (provisional.kind === "unsupported") {
       loading = false; clear(); panel?.destroy(); panel = null; return;
@@ -315,6 +351,7 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
     const token = ++generation; sessionVersion++; navigation?.abort(); navigation = null;
     cancelTraversal(); discovery?.abort(); discovery = null;
     rateLimited = false; error = null; loading = true; query = "";
+    directoryErrors.clear(); revealError = null;
     panel?.clearSensitiveData(); store.startSession(route.repo, route.ref);
     try { await reveal(token, getUrl()); }
     catch (value) { failure(value, token); }
@@ -333,6 +370,7 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
       discovery?.abort(); discovery = null; cancelTraversal();
       unsubscribe(); const outgoingPanel = panel; panel = null;
       route = null; refs = []; refsRepo = null; query = ""; lastUrl = null; error = null;
+      directoryErrors.clear(); revealError = null;
       const failures: unknown[] = [];
       try { outgoingPanel?.destroy(); } catch (value) { failures.push(value); }
       try { store.dispose(); } catch (value) { failures.push(value); }

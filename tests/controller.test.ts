@@ -227,7 +227,8 @@ describe("route controller integration", () => {
     vi.mocked(t.provider.listDirectory).mockRejectedValueOnce(new RepositoryError("network"));
     await t.navigateTo(url("acme/repo/-/blob/main/src/a%20b.ts")); await flush();
     expect(t.panel.root.querySelector('[aria-label="Retry repository tree"]')).not.toBeNull();
-    t.actions.onToggleDirectory("src"); await flush();
+    await t.store.loadDirectory("src");
+    t.actions.onToggleDirectory("src/nested"); await flush();
     expect(t.panel.root.querySelector('[aria-label="Retry repository tree"]')).not.toBeNull();
   });
   it.each(["signed-out", "forbidden"] as const)("shows full traversal %s even when sibling cancellation follows store clearing", async (code) => {
@@ -336,5 +337,128 @@ describe("route controller integration", () => {
     const pending = t.navigateTo(url()); await vi.waitFor(() => expect(document.getElementById("repotreex-root")).not.toBeNull());
     expect(t.store.getSnapshot().repo).toBeNull(); expect(t.panel.root.querySelector('select')?.options).toHaveLength(0);
     gate.resolve([]); await pending;
+  });
+  it.each(["reveal", "traversal", "cancel"] as const)("retains same-session late 429 after detached %s until explicit recovery", async (operation) => {
+    const t = setup(); await t.navigateTo(url()); const gate = deferred<DirectoryListing>();
+    vi.mocked(t.provider.listDirectory).mockReturnValueOnce(gate.promise);
+    const pending = operation === "reveal" ? t.navigateTo(url("acme/repo/-/blob/main/src/nested/app.ts")) : Promise.resolve();
+    if (operation !== "reveal") t.actions.onLoadFullTree();
+    await vi.waitFor(() => expect(t.store.getSnapshot().nodesByPath.src.loading).toBe(true));
+    if (operation === "cancel") t.actions.onCancelFullTree?.();
+    else await t.navigateTo(url("acme/repo/-/blob/main/a.ts"));
+    gate.reject(new RepositoryError("rate-limited", { status: 429 })); await pending; await flush();
+    expect(t.panel.root.querySelector<HTMLButtonElement>('[aria-label="Load full tree for search"]')?.disabled).toBe(true);
+    const count = vi.mocked(t.provider.listDirectory).mock.calls.length;
+    t.actions.onLoadFullTree(); await flush(); expect(t.provider.listDirectory).toHaveBeenCalledTimes(count);
+    expect(t.panel.root.textContent).not.toContain("src/nested/app.ts");
+    t.actions.onRetryDirectory?.("src");
+    await vi.waitFor(() => expect(t.panel.root.querySelector<HTMLButtonElement>('[aria-label="Load full tree for search"]')?.disabled).toBe(false));
+  });
+  it("ignores late 429 from a replaced ref session", async () => {
+    const t = setup(); await t.navigateTo(url()); const gate = deferred<DirectoryListing>();
+    vi.mocked(t.provider.listDirectory).mockReturnValueOnce(gate.promise); t.actions.onLoadFullTree();
+    await vi.waitFor(() => expect(t.store.getSnapshot().nodesByPath.src.loading).toBe(true));
+    await t.navigateTo(url("acme/repo/-/blob/dev/a.ts")); gate.reject(new RepositoryError("rate-limited")); await flush();
+    expect(t.panel.root.querySelector<HTMLButtonElement>('[aria-label="Load full tree for search"]')?.disabled).toBe(false);
+  });
+  it.each(["", "src", "src/nested"])("matching directory retry at %s resumes sequential current-file reveal", async (failedPath) => {
+    const t = setup(); const original = vi.mocked(t.provider.listDirectory).getMockImplementation();
+    if (!original) throw new Error("Missing synthetic directory provider");
+    let failed = false;
+    vi.mocked(t.provider.listDirectory).mockImplementation(async (...args) => {
+      if (args[2] === failedPath && !failed) { failed = true; throw new RepositoryError("network"); }
+      return original(...args);
+    });
+    await t.navigateTo(url("acme/repo/-/blob/main/src/nested/app.ts")); await flush();
+    expect(t.store.getSnapshot().selectedPath).toBeNull();
+    t.actions.onRetryDirectory?.(failedPath);
+    await vi.waitFor(() => expect(t.store.getSnapshot().selectedPath).toBe("src/nested/app.ts")); await flush();
+    expect(t.panel.root.querySelector('[aria-label="Retry repository tree"]')).toBeNull();
+    expect(t.panel.root.querySelector('[aria-selected="true"]')?.getAttribute("data-path")).toBe("src/nested/app.ts");
+  });
+  it("matching retry clears its directory failure without clearing another directory failure", async () => {
+    const t = setup({ listDirectory: vi.fn(async (_repo, _ref, path) => path === ""
+      ? listing("", [["src", "directory"], ["docs", "directory"]]) : listing(path, []) ) });
+    await t.navigateTo(url());
+    vi.mocked(t.provider.listDirectory).mockRejectedValueOnce(new RepositoryError("network"));
+    t.actions.onToggleDirectory("src"); await vi.waitFor(() => expect(t.store.getSnapshot().nodesByPath.src.error?.code).toBe("network"));
+    vi.mocked(t.provider.listDirectory).mockRejectedValueOnce(new RepositoryError("server"));
+    t.actions.onToggleDirectory("docs"); await vi.waitFor(() => expect(t.store.getSnapshot().nodesByPath.docs.error?.code).toBe("server"));
+    t.actions.onRetryDirectory?.("src"); await vi.waitFor(() => expect(t.store.getSnapshot().nodesByPath.src.loaded).toBe(true));
+    expect(t.store.getSnapshot().nodesByPath.docs.error?.code).toBe("server");
+    t.actions.onRetryDirectory?.("docs"); await flush();
+    expect(t.panel.root.querySelector('[aria-label="Retry repository tree"]')).toBeNull();
+    expect(t.panel.root.querySelector('[aria-label="Retry directory"]')).toBeNull();
+  });
+  it("full search success does not clear a reveal-owned error or resume reveal implicitly", async () => {
+    const t = setup(); await t.navigateTo(url());
+    vi.mocked(t.provider.listDirectory).mockRejectedValueOnce(new RepositoryError("network"));
+    await t.navigateTo(url("acme/repo/-/blob/main/src/nested/app.ts"));
+    t.actions.onLoadFullTree(); await vi.waitFor(() => expect(t.store.getSnapshot().nodesByPath["src/nested"].loaded).toBe(true)); await flush();
+    expect(t.store.getSnapshot().selectedPath).toBeNull();
+    expect(t.panel.root.querySelector('[aria-label="Retry repository tree"]')).not.toBeNull();
+    t.actions.onRetryDirectory?.("src"); await vi.waitFor(() => expect(t.store.getSnapshot().selectedPath).toBe("src/nested/app.ts"));
+  });
+  it("full search success leaves a directory-owned failure until matching explicit retry", async () => {
+    const t = setup(); await t.navigateTo(url());
+    vi.mocked(t.provider.listDirectory).mockRejectedValueOnce(new RepositoryError("server"));
+    t.actions.onToggleDirectory("src"); await vi.waitFor(() => expect(t.store.getSnapshot().nodesByPath.src.error?.code).toBe("server"));
+    t.actions.onLoadFullTree(); await vi.waitFor(() => expect(t.store.getSnapshot().nodesByPath["src/nested"].loaded).toBe(true)); await flush();
+    expect(t.panel.root.querySelector('[aria-label="Retry repository tree"]')).not.toBeNull();
+    t.actions.onRetryDirectory?.("src"); await flush();
+    expect(t.panel.root.querySelector('[aria-label="Retry repository tree"]')).toBeNull();
+  });
+  it("a directory retry overtaken by navigation cannot reveal the outgoing file", async () => {
+    const t = setup(); await t.navigateTo(url());
+    vi.mocked(t.provider.listDirectory).mockRejectedValueOnce(new RepositoryError("network"));
+    await t.navigateTo(url("acme/repo/-/blob/main/src/nested/app.ts"));
+    const gate = deferred<DirectoryListing>(); vi.mocked(t.provider.listDirectory).mockReturnValueOnce(gate.promise);
+    t.actions.onRetryDirectory?.("src"); await vi.waitFor(() => expect(t.store.getSnapshot().nodesByPath.src.loading).toBe(true));
+    await t.navigateTo(url("acme/repo/-/blob/main/b.ts")); gate.resolve(listing("src", [["src/nested", "directory"]])); await flush();
+    expect(t.store.getSnapshot().selectedPath).toBe("b.ts");
+    expect(t.store.getSnapshot().nodesByPath["src/nested"].loaded).toBe(false);
+  });
+  it("queued preference recovery persists the cumulative desired open and width after a failed patch", async () => {
+    const t = setup(); await t.navigateTo(url()); const failed = deferred<undefined>(); const recovered = deferred<undefined>();
+    const persist = t.storage.set.getMockImplementation();
+    if (!persist) throw new Error("Missing synthetic storage writer");
+    t.storage.set.mockReturnValueOnce(failed.promise);
+    t.actions.onPreferenceChange({ panelOpen: false });
+    await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(1));
+    t.actions.onPreferenceChange({ panelWidth: 440 });
+    t.storage.set.mockImplementationOnce(async (items) => { await recovered.promise; await persist(items); });
+    failed.reject(new Error("private preference failure"));
+    await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(2)); await flush();
+    expect(t.panel.root.textContent).toContain("not saved");
+    expect(t.storage.set.mock.calls[1]).toEqual([{ "repotreex.preferences": { panelOpen: false, panelWidth: 440 } }]);
+    recovered.resolve(undefined); await vi.waitFor(() => expect(t.panel.root.textContent).not.toContain("not saved"));
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 440 } });
+  });
+  it("preference failure notice survives success of an older intent until the newest intent persists", async () => {
+    const t = setup(); await t.navigateTo(url());
+    const persist = t.storage.set.getMockImplementation();
+    if (!persist) throw new Error("Missing synthetic storage writer");
+    t.storage.set.mockRejectedValueOnce(new Error("private")); t.actions.onPreferenceChange({ panelOpen: false });
+    await vi.waitFor(() => expect(t.panel.root.textContent).toContain("not saved"));
+    const older = deferred<undefined>(); const newest = deferred<undefined>();
+    t.storage.set.mockImplementationOnce(async (items) => { await older.promise; await persist(items); })
+      .mockImplementationOnce(async (items) => { await newest.promise; await persist(items); });
+    t.actions.onPreferenceChange({ panelWidth: 400 }); await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(2));
+    t.actions.onPreferenceChange({ panelOpen: true }); older.resolve(undefined);
+    await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(3)); await flush();
+    expect(t.panel.root.textContent).toContain("not saved");
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 400 } });
+    expect(t.storage.set.mock.calls[2]).toEqual([{ "repotreex.preferences": { panelOpen: true, panelWidth: 400 } }]);
+    newest.resolve(undefined); await vi.waitFor(() => expect(t.panel.root.textContent).not.toContain("not saved"));
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: true, panelWidth: 400 } });
+  });
+  it("cumulative preference recovery after a failed read still preserves earlier unsaved settings", async () => {
+    const t = setup(); await t.navigateTo(url());
+    t.storage.get.mockRejectedValueOnce(new Error("private storage read"));
+    t.actions.onPreferenceChange({ panelOpen: false });
+    await vi.waitFor(() => expect(t.panel.root.textContent).toContain("not saved"));
+    t.actions.onPreferenceChange({ panelWidth: 480 });
+    await vi.waitFor(() => expect(t.panel.root.textContent).not.toContain("not saved"));
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 480 } });
   });
 });
