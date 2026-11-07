@@ -1,5 +1,6 @@
 :host {
-  all: initial;
+  /* Shadow-important rules protect the host itself from outer page selectors. */
+  all: initial !important;
   --surface: #f7f8f8;
   --raised: #ffffff;
   --ink: #242b30;
@@ -9,16 +10,16 @@
   --selected: #daede8;
   --hover: #e8edee;
   --danger: #a52929;
-  display: block;
-  position: fixed;
-  inset: var(--repotreex-top-offset, 0px) auto 0 0;
-  width: min(var(--repotreex-panel-width, 300px), 100vw);
-  z-index: 1000;
-  color: var(--ink);
-  color-scheme: light;
-  font: 12px/1.5 "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  text-align: left;
-  direction: ltr;
+  display: block !important;
+  position: fixed !important;
+  inset: var(--repotreex-top-offset, 0px) auto 0 0 !important;
+  width: min(var(--repotreex-panel-width, 300px), 100vw) !important;
+  z-index: 1000 !important;
+  color: var(--ink) !important;
+  color-scheme: light !important;
+  font: 12px/1.5 "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace !important;
+  text-align: left !important;
+  direction: ltr !important;
 }
 :host([data-theme="dark"]) {
   --surface: #181e22;
@@ -30,7 +31,7 @@
   --selected: #25463f;
   --hover: #2b353c;
   --danger: #ff9e9e;
-  color-scheme: dark;
+  color-scheme: dark !important;
 }
 *, *::before, *::after { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -71,7 +72,7 @@ svg { flex: none; vertical-align: middle; }
 .resizer { position: absolute; top: 0; bottom: 0; right: -4px; width: 9px; cursor: ew-resize; touch-action: none; }
 .resizer:hover, .resizer:focus-visible { background: var(--accent); opacity: .65; }
 :host([data-resizing="true"]) .panel { user-select: none; }
-:host([data-open="false"]) { width: 32px; pointer-events: none; }
+:host([data-open="false"]) { width: 32px !important; pointer-events: none !important; }
 .reopen { pointer-events: auto; }
 .backdrop { position: fixed; inset: var(--repotreex-top-offset, 0px) 0 0; background: rgb(0 0 0 / .35); border: 0; border-radius: 0; z-index: -1; }
 :host([data-overlay="true"]) .panel { box-shadow: 4px 0 16px rgb(0 0 0 / .2); }

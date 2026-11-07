@@ -74,6 +74,8 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
     name, value: html.style.getPropertyValue(name), priority: html.style.getPropertyPriority(name),
   }));
   const priorClass = html.classList.contains(LAYOUT_CLASS);
+  const priorPadding = { value: html.style.getPropertyValue("padding-left"), priority: html.style.getPropertyPriority("padding-left") };
+  let paddingDemoted = false;
   let callbacks: PanelOptions | null = options;
   let open = options.preferences?.panelOpen ?? true;
   let width = clampedWidth(options.preferences?.panelWidth ?? 300);
@@ -138,7 +140,7 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
   root.append(style, backdrop, region, reopen, resizer);
   const layoutStyle = element("style"); layoutStyle.dataset.repotreexLayout = "";
   layoutStyle.textContent = `html.${LAYOUT_CLASS} { padding-left: calc(var(--repotreex-page-padding-left, 0px) + var(--repotreex-panel-width, 300px)) !important; }`;
-  // Only two dedicated properties and one class touch CNB; inline padding is never overwritten.
+  // The class owns the adjustment; demote inline !important only while it would defeat that class.
   html.style.setProperty("--repotreex-page-padding-left", window.getComputedStyle(html).paddingLeft || "0px");
   html.append(layoutStyle, host);
 
@@ -152,7 +154,12 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
     reopen.setAttribute("aria-expanded", String(open));
     backdrop.hidden = !open || !overlay;
     resizer.setAttribute("aria-valuenow", String(width));
-    html.classList.toggle(LAYOUT_CLASS, open && !overlay);
+    const adjustPage = open && !overlay;
+    if (priorPadding.priority === "important" && adjustPage !== paddingDemoted) {
+      html.style.setProperty("padding-left", priorPadding.value, adjustPage ? "" : priorPadding.priority);
+      paddingDemoted = adjustPage;
+    }
+    html.classList.toggle(LAYOUT_CLASS, adjustPage);
     let offset = 0;
     for (const candidate of document.querySelectorAll<HTMLElement>('header, [role="banner"]')) {
       const position = window.getComputedStyle(candidate).position;
@@ -229,9 +236,13 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
     state = queued; queued = null;
     const snapshot = state.snapshot;
     const active = root.activeElement;
-    const restoreFocus = focusRequested || active instanceof window.HTMLElement && active.getAttribute("role") === "treeitem";
+    const activeRow = active instanceof window.HTMLElement && active.getAttribute("role") === "treeitem";
+    const retryFocus = !focusRequested && active instanceof window.HTMLElement && active.dataset.action
+      ? { action: active.dataset.action, path: active.dataset.path } : null;
+    const restoreFocus = focusRequested || activeRow || active === tree || retryFocus !== null;
     if (!restoreFocus && previousSelection !== snapshot.selectedPath) focusPath = snapshot.selectedPath;
-    if (!focusRequested && active instanceof window.HTMLElement && active.getAttribute("role") === "treeitem") focusPath = active.dataset.path ?? null;
+    if (!focusRequested && activeRow) focusPath = active.dataset.path ?? null;
+    if (retryFocus?.path !== undefined) focusPath = retryFocus.path;
     focusRequested = false;
     query = state.query ?? query; search.value = query;
     const activeSession = snapshot.repo !== null && snapshot.ref !== null;
@@ -240,7 +251,7 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
     const busy = Boolean(state.loading || rootNode?.loading || state.fullTree?.loading);
     const loadedMatches = query.trim() ? matchLoadedNodes(snapshot, query) : null;
     visible = loadedMatches ?? snapshot.visibleNodes;
-    repository.textContent = snapshot.repo?.split("/").at(-1) ?? "";
+    scrub(repository); repository.textContent = snapshot.repo?.split("/").at(-1) ?? "";
     scrub(ref);
     const refs = state.refs ?? [];
     for (const kind of ["branch", "tag"] as const) {
@@ -262,7 +273,9 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
     const fullLoading = state.fullTree?.loading;
     fullSearch.setAttribute("aria-label", fullLoading ? "Cancel full-tree search" : "Load full tree for search");
     fullSearch.textContent = fullLoading ? "Cancel full-tree search" : "Load full tree for search";
+    fullSearch.title = fullSearch.textContent;
     const progress = state.fullTree?.progress;
+    scrub(status);
     status.textContent = fullLoading && progress
       ? `Loading full tree: ${progress.loadedNodes} paths; ${progress.queuedDirectories} queued; ${progress.activeRequests} active.`
       : busy ? "Loading repository tree..."
@@ -300,7 +313,10 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
       item.setAttribute("aria-posinset", String(positions.get(entry.path)));
       item.setAttribute("aria-setsize", String(siblingGroups.get(query.trim() ? null : entry.parentPath)?.length ?? 1));
       if (entry.kind === "directory") {
-        item.setAttribute("aria-expanded", String(entry.expanded)); item.setAttribute("aria-busy", String(entry.loading));
+        item.setAttribute("aria-busy", String(entry.loading));
+      }
+      if (entry.kind === "directory" && !loadedMatches) {
+        item.setAttribute("aria-expanded", String(entry.expanded));
         const chevron = createPanelIcon(document, "chevron"); chevron.classList.add("chevron"); item.append(chevron);
       } else item.append(element("span", "spacer"));
       item.append(createPanelIcon(document, entry.kind === "directory" ? "folder" : entry.kind));
@@ -321,10 +337,13 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
     focusPath ??= rows.find((item) => item.dataset.path === snapshot.selectedPath)?.dataset.path ?? rows[0]?.dataset.path ?? null;
     for (const item of rows) item.tabIndex = item.dataset.path === focusPath ? 0 : -1;
     if (restoreFocus) {
-      if (rows.length) focusRow(focusPath);
+      const retry = retryFocus && [...root.querySelectorAll<HTMLButtonElement>("button[data-action]")]
+        .find((item) => item.dataset.action === retryFocus.action && item.dataset.path === retryFocus.path);
+      if (retry && open) { retry.focus(); retry.scrollIntoView({ block: "nearest", behavior: "auto" }); }
+      else if (rows.length) focusRow(focusPath);
       else if (open) tree.focus();
     }
-    if (snapshot.selectedPath) rows.find((item) => item.dataset.path === snapshot.selectedPath)?.scrollIntoView({ block: "nearest", behavior: "auto" });
+    if (!restoreFocus && snapshot.selectedPath) rows.find((item) => item.dataset.path === snapshot.selectedPath)?.scrollIntoView({ block: "nearest", behavior: "auto" });
     updateLayout();
   };
   const schedule = () => {
@@ -391,12 +410,14 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
       case "Home": next = visible[0].path; break;
       case "End": next = visible[visible.length - 1].path; break;
       case "ArrowRight":
+        if (query.trim()) break;
         if (entry.kind === "directory") {
           if (!entry.expanded) callbacks?.onToggleDirectory(path);
           else next = visible.find((candidate) => candidate.parentPath === path)?.path ?? null;
         }
         break;
       case "ArrowLeft":
+        if (query.trim()) break;
         if (entry.kind === "directory" && entry.expanded) callbacks?.onToggleDirectory(path);
         else next = entry.parentPath;
         break;
@@ -412,6 +433,7 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
       for (const item of rows) item.tabIndex = item === target ? 0 : -1;
     }
   };
+  const onKeyUp = (event: Event) => { event.stopPropagation(); };
   const onInput = (event: Event) => {
     event.stopPropagation();
     query = search.value; queued = { ...(queued ?? state ?? emptyState()), query }; schedule(); callbacks?.onSearch(query);
@@ -436,7 +458,7 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
   };
   const onPointerUp = (event: PointerEvent) => { if (drag?.pointerId === event.pointerId) { onPointerMove(event); endDrag(true); } };
   const onPointerCancel = (event: PointerEvent) => { if (drag?.pointerId === event.pointerId) endDrag(false, event.type !== "lostpointercapture"); };
-  root.addEventListener("click", onClick); root.addEventListener("keydown", onKey); root.addEventListener("focusin", onFocus);
+  root.addEventListener("click", onClick); root.addEventListener("keydown", onKey); root.addEventListener("keyup", onKeyUp); root.addEventListener("focusin", onFocus);
   search.addEventListener("input", onInput); ref.addEventListener("change", onRef);
   resizer.addEventListener("pointerdown", onPointerDown); resizer.addEventListener("pointermove", onPointerMove);
   resizer.addEventListener("pointerup", onPointerUp); resizer.addEventListener("pointercancel", onPointerCancel);
@@ -474,12 +496,13 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
       const restorePageFocus = document.activeElement === host;
       endDrag(false); clearSensitiveData(); disposed = true; callbacks = null;
       observer.disconnect(); darkMedia?.removeEventListener("change", updateTheme); window.removeEventListener("resize", updateLayout);
-      root.removeEventListener("click", onClick); root.removeEventListener("keydown", onKey); root.removeEventListener("focusin", onFocus);
+      root.removeEventListener("click", onClick); root.removeEventListener("keydown", onKey); root.removeEventListener("keyup", onKeyUp); root.removeEventListener("focusin", onFocus);
       search.removeEventListener("input", onInput); ref.removeEventListener("change", onRef);
       resizer.removeEventListener("pointerdown", onPointerDown); resizer.removeEventListener("pointermove", onPointerMove);
       resizer.removeEventListener("pointerup", onPointerUp); resizer.removeEventListener("pointercancel", onPointerCancel);
       resizer.removeEventListener("lostpointercapture", onPointerCancel);
       root.replaceChildren(); host.remove(); layoutStyle.remove();
+      if (paddingDemoted) html.style.setProperty("padding-left", priorPadding.value, priorPadding.priority);
       for (const property of priorProperties) {
         if (property.value) html.style.setProperty(property.name, property.value, property.priority);
         else html.style.removeProperty(property.name);

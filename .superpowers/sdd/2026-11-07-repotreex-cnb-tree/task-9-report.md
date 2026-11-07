@@ -126,3 +126,121 @@ of the commit.
   with `bash: script/pre_commit_checks.sh: No such file or directory` from the
   external pre-commit hook. The prior ruling authorizes the `--no-verify`
   fallback for this exact missing-script failure; no hook/config was modified.
+
+## Fix round 1
+
+Addressed all seven Important findings and the Minor tooltip finding on top of
+`29023fa`, in the same worktree without subagents, push, or live CNB actions.
+This section supersedes the original report's claim that inline padding is
+always untouched and clarifies the ordinary-rerender privacy/focus behavior.
+
+### Changed and regression files
+
+- `src/content/panel.ts`: scrub outgoing repository/status descendants before
+  replacement; preserve tree/empty-tree/retry focus; prioritize owned-focus
+  scrolling over selected-row autoscroll; demote existing inline important
+  padding only while the desktop layout class owns the adjustment and restore
+  its exact value/priority on collapse, mobile transition, or destroy; contain
+  keyup; align flat search keyboard behavior and Load/Cancel tooltip.
+- `src/content/panel.css`: shadow-important reset and essential host geometry,
+  typography/theme and collapsed-width declarations protect the host itself
+  from outer page CSS while retaining mobile clamping/backdrop behavior.
+- `tests/panel.test.ts`: now 60 tests (16 added executions), covering retained
+  outgoing repository Text nodes through ordinary render and later clear or
+  destroy, scroll-request precedence, empty-tree arrival, all three replaced
+  retry sources and fallback, deferred focus precedence, literal-path retry
+  matching, external focus preservation, outgoing row/ref/error scrubbing,
+  flat ARIA/Left/Right behavior, keyup containment, and tooltip transitions.
+- `scripts/check-panel-browser.mjs`: reusable regression probe using installed
+  Playwright/Chromium, four independent in-memory synthetic pages and no HTTP
+  server, network requests, or dependency installation. Checks real host
+  cascade/rect/reset, desktop important-padding adjustment and restoration,
+  pointer resizing, collapse/reopen, mobile/backdrop/Escape, actual bounded
+  scrolling, focus replacement, and owned/external keyup delivery.
+- This report records fix-round results. No build configuration, dependency,
+  icon, controller/bootstrap, storage, or preference interface changes.
+
+### RED/GREEN and direct validation
+
+Node runtime: 24.22.2. Before implementation,
+`npx --yes -p node@24 -c 'npm test -- tests/panel.test.ts'` exited 1:
+12 failed / 45 passed (57 total), reproducing the review's DOM defects.
+The browser command below also exited 1 before implementation for all four
+checks: host geometry, inline important padding, focused-row visibility, and
+empty-tree focus transfer. The scroll fixture deliberately omits hostile host
+geometry CSS so unbounded layout cannot mask the independent scroll defect.
+
+After implementation the first required validation run passed 57 focused tests
+and typecheck but failed ESLint on test non-null assertions and undeclared
+browser globals in the probe. Those test-only issues were corrected without
+disabling lint rules. Three additional boundary/retention guards were added.
+Final commands/results before commit:
+
+```sh
+npx --yes -p node@24 -c 'npm test -- tests/panel.test.ts && npm run typecheck && npm run lint'
+```
+
+Exit 0: 60/60 focused tests, both TypeScript scopes and ESLint passed.
+
+```sh
+npx --yes -p node@24 -c 'npm test && npm run build && shasum -a 256 dist/extension/content/panel.js && npm run build && shasum -a 256 dist/extension/content/panel.js && npm run package && unzip -t dist/repotreex-0.1.0.zip'
+```
+
+Exit 0: 621/621 full tests in 11 files; two Chrome 120 builds produced identical
+standalone-panel SHA-256
+`0a9f5681b6ac1e4c4e617ff9a573e1ce32dc64249a583d8ec19aa9448174577f`;
+packaging and all ZIP integrity checks passed. Existing CSS text loading is
+sufficient and reproducible; the Task 10 bootstrap remains unchanged.
+
+```sh
+PLAYWRIGHT_MODULE_PATH=/Users/bytedance/.npm/_npx/fd3bca3c548369c0/node_modules/playwright/index.mjs CHROMIUM_EXECUTABLE_PATH=/Users/bytedance/Library/Caches/ms-playwright/chromium_headless_shell-1254/chrome-headless-shell-mac-arm64/chrome-headless-shell PATH=/Users/bytedance/.npm/_npx/387698761821791d/node_modules/node/bin:$PATH node scripts/check-panel-browser.mjs
+PATH=/Users/bytedance/.npm/_npx/387698761821791d/node_modules/node/bin:$PATH node .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-9-browser-check.mjs
+git diff --check
+```
+
+All exited 0. New probe: 4/4 checks passed; verified 1280x800 desktop and
+390x844 mobile, host fixed at left 0/top 64 with zero margin/padding/transform,
+300px expanded and 32px collapsed width, page padding 318px then 468px after
+real resize and exactly 18px important on restoration. The scroll probe asserts
+a genuinely overflowing tree, fully visible focused final row after rerender,
+and distant selected row above its viewport. Both browser probes observed no
+console errors/warnings or network requests. Existing smoke also passed themes,
+reduced-motion, keyboard/pointer actions, 600px overlay, ref/full-search/retry,
+authorization scrubbing and teardown. Browser plugin not available; installed
+Playwright was used for the requested Chromium validation. Refreshed local
+light desktop and dark mobile screenshots were inspected for clipping, page
+offset and legibility; ignored screenshots/smoke script are not staged.
+
+### Self-review and remaining boundaries
+
+Outgoing repository Text references are scrubbed before ordinary replacement,
+not merely during later lifecycle calls. Existing row/option/error scrubbing
+remains intact. Retry identity is captured before scrub, matched by literal
+action/path without sensitive selector interpolation, and released after the
+render. Focus restores only when the panel owned it or explicit focus was
+requested; missing retry controls fall back to a valid roving row or empty
+tree, with directory/ancestor preference. Selected autoscroll cannot undo
+owned-focus scrolling. Search results have level-one leaf semantics, no
+expansion affordance, and no hierarchical Left/Right actions; Enter/Space
+directory activation still uses the existing callback contract.
+
+Only open/width callbacks persist preferences, and no metadata storage/logging
+or remote assets were added. Keyup containment performs no activation and its
+listener is removed during teardown. Page CSS reset is scoped to the host;
+desktop padding still depends on the dedicated document class and restores
+original priority without replacing unrelated style/class state. This is not
+a security boundary against same-page hostile JavaScript.
+
+Live CNB integration and actual screen-reader output remain untested and are
+deferred to Task 10. No unresolved self-review finding remains in this round.
+
+### Commit validation/hook handling
+
+After direct validation, the normal
+`git commit -F .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-9-fix-1-commit.txt`
+was attempted and exited 1 only with
+`bash: script/pre_commit_checks.sh: No such file or directory`.
+The authorized fallback is
+`git commit --no-verify -F .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-9-fix-1-commit.txt`.
+No hook file or Git configuration is modified; all scoped validation was run
+directly beforehand.

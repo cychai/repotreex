@@ -498,6 +498,155 @@ describe("tree panel", () => {
       expect(options.onPreferenceChange).not.toHaveBeenCalled(); panel.destroy();
     }
   });
+
+  it.each(["clear", "destroy"] as const)("scrubs outgoing repository text before ordinary rerender and later %s", (lifecycle) => {
+    const { panel } = setup(); panel.render(state()); flush();
+    const repository = panel.root.querySelector(".repository");
+    if (!repository?.firstChild) throw new Error("Expected synthetic repository text");
+    const oldText = repository.firstChild;
+    panel.render(state()); flush();
+    expect(oldText.nodeValue).toBe("");
+    expect(repository.textContent).toBe("demo");
+    const latestText = repository.firstChild;
+    if (lifecycle === "clear") panel.clearSensitiveData();
+    else panel.destroy();
+    expect(latestText?.nodeValue).toBe("");
+    expect(oldText.nodeValue).toBe("");
+  });
+
+  it("keeps focused-row scrolling ahead of a distant selected row during rerender", () => {
+    const { panel } = setup(); panel.render(state()); flush(); panel.focusPath("vendor");
+    const scrolled: HTMLElement[] = [];
+    vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(function (this: HTMLElement) { scrolled.push(this); });
+    panel.render(state()); flush();
+    expect(panel.root.activeElement).toBe(row(panel, "vendor"));
+    expect(scrolled.map((item) => item.dataset.path)).toEqual(["vendor"]);
+  });
+
+  it("transfers focus from an empty tree to the selected row when results arrive", () => {
+    const { panel } = setup();
+    panel.render(state({ snapshot: { ...state().snapshot, visibleNodes: [] } })); flush();
+    control(panel, "Repository files").focus();
+    panel.render(state()); flush();
+    expect(panel.root.activeElement).toBe(row(panel, "src/app.ts"));
+    expect(row(panel, "src/app.ts").tabIndex).toBe(0);
+  });
+
+  it.each(["root", "full-tree", "directory"] as const)("preserves replaced %s retry focus, then falls back to a valid tree stop", (source) => {
+    const { panel } = setup();
+    const failure = source === "root" ? state({ error: { code: "network" } })
+      : source === "full-tree" ? state({ fullTree: { loading: false, error: { code: "network" } } })
+      : state({ snapshot: { ...state().snapshot, visibleNodes: [node("src", "directory", { error: { code: "network" } })] } });
+    const label = source === "root" ? "Retry repository tree" : source === "full-tree" ? "Retry full-tree search" : "Retry directory";
+    panel.render(failure); flush();
+    const oldRetry = control(panel, label); oldRetry.focus();
+    panel.render(failure); flush();
+    expect(panel.root.activeElement).toBe(control(panel, label));
+    expect(oldRetry.isConnected).toBe(false);
+    panel.render(state()); flush();
+    expect(panel.root.activeElement).toBe(row(panel, source === "directory" ? "src" : "src/app.ts"));
+    expect((panel.root.activeElement as HTMLElement).tabIndex).toBe(0);
+  });
+
+  it("falls back to a focusable empty tree after a retry disappears without rows", () => {
+    const { panel } = setup();
+    const snapshot = { ...state().snapshot, visibleNodes: [] };
+    panel.render(state({ snapshot, error: { code: "network" } })); flush();
+    control(panel, "Retry repository tree").focus();
+    panel.render(state({ snapshot })); flush();
+    const tree = control(panel, "Repository files");
+    expect(panel.root.activeElement).toBe(tree); expect(tree.tabIndex).toBe(0);
+  });
+
+  it("honors deferred explicit focus instead of restoring a replaced retry", () => {
+    const { panel } = setup(); panel.render(state({ error: { code: "network" } })); flush();
+    control(panel, "Retry repository tree").focus();
+    panel.render(state({ error: { code: "network" } })); panel.focusPath("vendor"); flush();
+    expect(panel.root.activeElement).toBe(row(panel, "vendor"));
+  });
+
+  it("matches replaced directory retries by literal path without stealing external focus", () => {
+    const { panel } = setup();
+    const path = 'docs/["synthetic"]';
+    const failure = state({ snapshot: { ...state().snapshot, visibleNodes: [
+      node("src", "directory", { error: { code: "network" } }),
+      node(path, "directory", { error: { code: "network" } }),
+    ] } });
+    panel.render(failure); flush();
+    const retries = [...panel.root.querySelectorAll<HTMLButtonElement>('[data-action="retry-directory"]')];
+    const retry = retries.find((item) => item.dataset.path === path);
+    if (!retry) throw new Error("Expected synthetic retry");
+    retry.focus(); panel.render(failure); flush();
+    expect((panel.root.activeElement as HTMLElement).dataset.path).toBe(path);
+    const pageInput = document.createElement("input"); document.body.append(pageInput); pageInput.focus();
+    panel.render(state()); flush(); expect(document.activeElement).toBe(pageInput);
+  });
+
+  it("scrubs outgoing rows, ref options and error text on ordinary rerender", () => {
+    const { panel } = setup(); panel.render(state({ error: { code: "network" } })); flush();
+    const oldRow = row(panel, "src/app.ts");
+    const oldLabel = oldRow.querySelector(".label")?.firstChild;
+    const oldRef = control<HTMLSelectElement>(panel, "Repository ref").options[0];
+    const oldRefText = oldRef.firstChild;
+    const oldRetry = control(panel, "Retry repository tree");
+    const oldRetryText = oldRetry.firstChild;
+    panel.render(state()); flush();
+    expect(oldRow.textContent).toBe(""); expect(oldRow.hasAttribute("data-path")).toBe(false);
+    expect(oldLabel?.nodeValue).toBe(""); expect(oldRef.value).toBe(""); expect(oldRefText?.nodeValue).toBe("");
+    expect(oldRetry.textContent).toBe(""); expect(oldRetryText?.nodeValue).toBe("");
+  });
+
+  it("does not transfer focus when an unfocused empty tree gains rows", () => {
+    const { panel } = setup();
+    panel.render(state({ snapshot: { ...state().snapshot, visibleNodes: [] } })); flush();
+    const input = control<HTMLInputElement>(panel, "Search repository paths"); input.focus();
+    panel.render(state()); flush(); expect(panel.root.activeElement).toBe(input);
+  });
+
+  it("represents search results as flat leaf items without hierarchical expansion", () => {
+    const { panel } = setup(); panel.render(state({ query: "src" })); flush();
+    const directory = row(panel, "src");
+    expect(directory.getAttribute("aria-level")).toBe("1");
+    expect(directory.hasAttribute("aria-expanded")).toBe(false);
+    expect(directory.querySelector(".chevron")).toBeNull();
+    expect(row(panel, "src/app.ts").getAttribute("aria-setsize")).toBe("3");
+  });
+
+  it("ignores hierarchical Left/Right keys in flat search but retains directory activation", () => {
+    const { panel, options } = setup(); panel.render(state({ query: "src" })); flush(); panel.focusPath("src");
+    key(row(panel, "src"), "ArrowRight"); expect(panel.root.activeElement).toBe(row(panel, "src"));
+    key(row(panel, "src"), "ArrowLeft"); expect(options.onToggleDirectory).not.toHaveBeenCalled();
+    panel.focusPath("src/app.ts"); key(row(panel, "src/app.ts"), "ArrowLeft");
+    expect(panel.root.activeElement).toBe(row(panel, "src/app.ts"));
+    key(row(panel, "src"), "Enter"); expect(options.onToggleDirectory).toHaveBeenCalledExactlyOnceWith("src");
+    panel.render(state({ query: "" })); flush(); panel.focusPath("src");
+    key(row(panel, "src"), "ArrowRight"); expect(panel.root.activeElement).toBe(row(panel, "src/app.ts"));
+  });
+
+  it("contains owned keyup without repeating keydown actions or suppressing external page keys", () => {
+    const { panel, options } = setup(); panel.render(state()); flush();
+    const received: string[] = [];
+    const onPageKey = (event: KeyboardEvent) => { received.push(event.key); };
+    document.addEventListener("keyup", onPageKey);
+    try {
+      for (const target of [row(panel, "src/app.ts"), control(panel, "Search repository paths"), control(panel, "Resize repository tree")]) {
+        target.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true, composed: true }));
+      }
+      expect(received).toEqual([]); expect(options.onOpenFile).not.toHaveBeenCalled();
+      const input = document.createElement("input"); document.body.append(input);
+      input.dispatchEvent(new KeyboardEvent("keyup", { key: "s", bubbles: true, composed: true }));
+      expect(received).toEqual(["s"]);
+    } finally { document.removeEventListener("keyup", onPageKey); }
+  });
+
+  it("updates full-search tooltip along with its load/cancel label", () => {
+    const { panel } = setup(); panel.render(state()); flush();
+    expect(control(panel, "Load full tree for search").title).toBe("Load full tree for search");
+    panel.render(state({ fullTree: { loading: true } })); flush();
+    expect(control(panel, "Cancel full-tree search").title).toBe("Cancel full-tree search");
+    panel.render(state()); flush();
+    expect(control(panel, "Load full tree for search").title).toBe("Load full tree for search");
+  });
 });
 
 function setupOptions(): Omit<PanelOptions, "document"> {
