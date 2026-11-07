@@ -99,6 +99,9 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
   let preferenceLoad: Promise<void> | null = null;
   let preferenceSaves: Promise<void> = Promise.resolve();
   let preferenceRevision = 0;
+  let dirtyPreferences: Partial<Preferences> = {};
+  const dirtyPreferenceRevisions: Partial<Record<keyof Preferences, number>> = {};
+  const savedPreferenceRevisions: Partial<Record<keyof Preferences, number>> = {};
   let preferenceNotice: "preferences-load-failed" | "preferences-save-failed" | null = null;
   let routeNotice: "path-not-found" | "head-fallback" | null = null;
   let headFallback = false;
@@ -150,21 +153,43 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
     return preferenceLoad;
   };
   const savePreferences = (patch: Partial<Preferences>) => {
+    if (destroyed) return;
     // Serialize read/modify/write saves; the storage contract itself is not a queue.
     const safePatch = {
       ...(typeof patch.panelOpen === "boolean" ? { panelOpen: patch.panelOpen } : {}),
       ...(typeof patch.panelWidth === "number" ? { panelWidth: patch.panelWidth } : {}),
     };
     panelPreferences = { ...panelPreferences, ...safePatch };
-    const intended = { ...panelPreferences };
     const revision = ++preferenceRevision;
+    dirtyPreferences = { ...dirtyPreferences, ...safePatch };
+    for (const key of ["panelOpen", "panelWidth"] as const) {
+      if (safePatch[key] !== undefined) dirtyPreferenceRevisions[key] = revision;
+    }
+    const intended = { ...dirtyPreferences };
+    const revisions = { ...dirtyPreferenceRevisions };
     preferenceSaves = preferenceSaves.then(async () => {
       if (destroyed) return;
+      // Earlier queued successes may have persisted some of this snapshot.
+      // Never replay those fields or untouched lifetime defaults across tabs.
+      const unsaved = (key: keyof Preferences) => (revisions[key] ?? 0) > (savedPreferenceRevisions[key] ?? 0);
+      const pending = {
+        ...(unsaved("panelOpen") ? { panelOpen: intended.panelOpen } : {}),
+        ...(unsaved("panelWidth") ? { panelWidth: intended.panelWidth } : {}),
+      };
+      if (pending.panelOpen === undefined && pending.panelWidth === undefined) return;
       try {
-        const saved = await preferences.save(intended);
-        if (!destroyed && revision === preferenceRevision) {
-          panelPreferences = saved; preferenceNotice = null; render();
+        const saved = await preferences.save(pending);
+        if (destroyed) return;
+        for (const key of ["panelOpen", "panelWidth"] as const) {
+          if (pending[key] === undefined) continue;
+          savedPreferenceRevisions[key] = revisions[key];
+          if (dirtyPreferenceRevisions[key] === revisions[key]) {
+            Reflect.deleteProperty(dirtyPreferences, key); Reflect.deleteProperty(dirtyPreferenceRevisions, key);
+          }
         }
+        panelPreferences = { ...saved, ...dirtyPreferences };
+        if (dirtyPreferences.panelOpen === undefined && dirtyPreferences.panelWidth === undefined) preferenceNotice = null;
+        render();
       } catch {
         // Storage errors can contain arbitrary values. Show only a fixed notice.
         if (!destroyed) { preferenceNotice = "preferences-save-failed"; render(); }
@@ -177,11 +202,12 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
     const token = generation;
     const priorError = directoryErrors.get(path);
     const blockedReveal = revealError;
+    const loadsDirectory = !toggle || !store.getSnapshot().nodesByPath[path]?.expanded;
     try {
       if (toggle) await store.toggleDirectory(path);
       else await store.loadDirectory(path);
       if (destroyed || session !== sessionVersion) return;
-      if (store.getSnapshot().nodesByPath[path]?.loaded) {
+      if (loadsDirectory && store.getSnapshot().nodesByPath[path]?.loaded) {
         if (directoryErrors.get(path) === priorError) directoryErrors.delete(path);
         if (blockedReveal?.path === path && blockedReveal.token === token && revealError === blockedReveal && current(token)) {
           revealError = null; loading = true; render();
@@ -371,6 +397,7 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
       unsubscribe(); const outgoingPanel = panel; panel = null;
       route = null; refs = []; refsRepo = null; query = ""; lastUrl = null; error = null;
       directoryErrors.clear(); revealError = null;
+      dirtyPreferences = {};
       const failures: unknown[] = [];
       try { outgoingPanel?.destroy(); } catch (value) { failures.push(value); }
       try { store.dispose(); } catch (value) { failures.push(value); }

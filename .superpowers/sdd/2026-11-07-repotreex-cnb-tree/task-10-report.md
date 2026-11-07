@@ -370,3 +370,104 @@ After the direct checks, the normal `git commit -F` attempt exited 1 with exactl
 `bash: script/pre_commit_checks.sh: No such file or directory`. The authorized
 `git commit --no-verify -F` retry uses the same reviewed six-file scope and
 message. No hook/config changes or push.
+
+## Fix round 2
+
+Fixed both Important fix-induced regressions from `7e0917d` on
+`feature/repotreex-cnb-tree`. All changes/checks stay in the requested worktree;
+no subagents, push, permission expansion, metadata logging or metadata storage.
+
+### Root causes, changed files and regressions
+
+- `src/content/controller.ts`: a successful toggle previously treated an already
+  loaded directory as recovered even when the operation only collapsed it.
+  Capture whether the operation invokes directory loading (explicit load/retry
+  or expansion) before toggling, and gate both error reconciliation and reveal
+  resumption on that fact plus successful loaded state. Collapse-only operations
+  preserve user collapse and retain directory/reveal errors. Explicit matching
+  retry still resumes selection, including dependencies cached by full search.
+- `src/content/controller.ts`: full preference snapshots previously replayed
+  stale fields that this tab never changed. Track only local dirty open/width
+  intentions and their per-field revisions. Save dirty patches through the
+  existing `PreferenceStore.save` merge against current storage. Filter out
+  fields already persisted by an earlier queued operation; failed intentions
+  remain in later cumulative patches. Reconcile only matching dirty revisions,
+  so older successes cannot clear newer same-valued intentions or prematurely
+  remove the failure notice. Teardown still drops queued work safely.
+- `tests/controller.test.ts`: eight new regressions with real panel controls,
+  controller, store and preferences. Cover collapse after search-loaded reveal
+  and directory failures, both directions of untouched cross-tab settings,
+  successful dirty-field retirement, failed local intent plus external changes,
+  queued-success filtering and repeated same-valued intent with pending recovery.
+  The independent second PreferenceStore shares synthetic storage, representing
+  another tab without mocking the preference merge behavior.
+- `scripts/check-content-browser.mjs`: assert built-browser collapse-only
+  preservation after search recovery and width-only preservation of a completed
+  external open-state write; retain cumulative failure recovery and the entire
+  existing bootstrap/BFCache/rate/auth/ref integration probe.
+
+No bootstrap, panel, PreferenceStore, provider, tree-store, route or protocol
+contract changes; manifest and build/package configuration remain unchanged.
+This supersedes round 1's full-state preference-save approach, retaining its
+cumulative recovery and fixed failure-notice guarantees with dirty-only patches.
+
+### TDD and direct validation
+
+Before production edits, the new regressions produced **6 failed, 138 passed**
+in the focused controller/bootstrap/panel run. Failures directly reproduced
+collapse re-expansion/error clearing and stale open/width overwrites. After the
+fixes and two additional queued-intent regressions, **146/146 passed**.
+The updated Chromium probe also failed against the previous built artifact:
+width-only save restored `panelOpen: true` instead of preserving external false.
+It passed after building the corrected entry.
+
+Exact commands from the target worktree:
+
+```sh
+export PATH=/Users/bytedance/.npm/_npx/387698761821791d/node_modules/node/bin:$PATH
+node --version
+npm test -- tests/controller.test.ts tests/bootstrap.test.ts tests/panel.test.ts
+npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run package
+unzip -t dist/repotreex-0.1.0.zip
+git diff --check
+export PLAYWRIGHT_MODULE_PATH=/Users/bytedance/.npm/_npx/fd3bca3c548369c0/node_modules/playwright/index.mjs
+export CHROMIUM_EXECUTABLE_PATH=/Users/bytedance/Library/Caches/ms-playwright/chromium_headless_shell-1254/chrome-headless-shell-mac-arm64/chrome-headless-shell
+node scripts/check-content-browser.mjs
+node scripts/check-panel-browser.mjs
+shasum -a 256 dist/extension/content/index.js dist/repotreex-0.1.0.zip
+```
+
+- Node **v24.22.2**; focused **146/146** (70 controller, 16 bootstrap, 60 panel).
+- Full **707/707 in 13 files**, including UTC/Shanghai reproducible packaging.
+- Both TypeScript scopes, ESLint and diff whitespace checks passed.
+- Production build passed (90.4 kb content entry); package passed and all eight
+  ZIP entries passed integrity checks.
+- Built Chromium content/MAIN-bridge probe and all four panel browser regressions
+  passed. Synthetic intercepted traffic only; no application console warnings
+  or errors, exactly six expected injected HTTP resource diagnostics.
+- Content SHA-256:
+  `dbcf063c9aaa3536c294b8ad7c380fbe01d9e454ec04cc1627e7820071e21fab`.
+- ZIP SHA-256:
+  `4dc4962d28abd3af53abe4d2278e0c9dee429487d1316c5bd705e90553e4e77d`.
+
+### Self-review and boundaries
+
+Reviewed the complete diff for load-versus-collapse ownership, matching error
+guards, dirty-field retirement, failed/newer/queued intention ordering, fixed
+notices, teardown and untouched storage fields. Both fixes and validations are
+complete. Cross-tab storage remains read/merge/write, not a transaction: this
+fix preserves changes completed before the save reads storage, but cannot promise
+atomic handling of simultaneous interleaved tab writes under the unchanged
+PreferenceStore contract. Real installed-extension/live CNB and actual BFCache
+admission remain untested; the existing synthetic persisted-event and isolated/
+MAIN-world checks pass. Already-issued fetch/storage work is non-abortable under
+the authoritative contracts; queued saves are still dropped on destroy.
+
+After direct validation, the normal `git commit -F` failed only with
+`bash: script/pre_commit_checks.sh: No such file or directory`. The authorized
+`git commit --no-verify -F` retry uses the same reviewed four-file scope/message.
+No hook/config modifications or push.

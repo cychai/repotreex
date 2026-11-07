@@ -461,4 +461,112 @@ describe("route controller integration", () => {
     await vi.waitFor(() => expect(t.panel.root.textContent).not.toContain("not saved"));
     expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 480 } });
   });
+  it("preserves a user collapse after full search loads a reveal dependency without owning its recovery", async () => {
+    const t = setup(); await t.navigateTo(url());
+    vi.mocked(t.provider.listDirectory).mockRejectedValueOnce(new RepositoryError("network"));
+    await t.navigateTo(url("acme/repo/-/blob/main/src/nested/app.ts")); await flush();
+    t.panel.root.querySelector<HTMLButtonElement>('[aria-label="Load full tree for search"]')?.click();
+    await vi.waitFor(() => expect(t.store.getSnapshot().nodesByPath["src/nested"].loaded).toBe(true)); await flush();
+    expect(t.store.getSnapshot().nodesByPath.src.expanded).toBe(true);
+    expect(t.panel.root.querySelector('[aria-label="Retry repository tree"]')).not.toBeNull();
+    const requests = vi.mocked(t.provider.listDirectory).mock.calls.length;
+    t.panel.root.querySelector<HTMLElement>('[role="treeitem"][data-path="src"]')?.click(); await flush();
+    expect(t.store.getSnapshot().nodesByPath.src.expanded).toBe(false);
+    expect(t.store.getSnapshot().selectedPath).toBeNull();
+    expect(t.panel.root.querySelector('[aria-label="Retry repository tree"]')).not.toBeNull();
+    expect(t.panel.root.querySelector('[aria-selected="true"]')).toBeNull();
+    expect(t.provider.listDirectory).toHaveBeenCalledTimes(requests);
+    t.actions.onRetryDirectory?.("src");
+    await vi.waitFor(() => expect(t.store.getSnapshot().selectedPath).toBe("src/nested/app.ts"));
+    expect(t.store.getSnapshot().nodesByPath.src.expanded).toBe(true);
+  });
+  it("collapse-only success cannot clear a directory-owned failure after full search loads it", async () => {
+    const t = setup(); await t.navigateTo(url()); await flush();
+    vi.mocked(t.provider.listDirectory).mockRejectedValueOnce(new RepositoryError("server"));
+    t.panel.root.querySelector<HTMLElement>('[role="treeitem"][data-path="src"]')?.click();
+    await vi.waitFor(() => expect(t.store.getSnapshot().nodesByPath.src.error?.code).toBe("server")); await flush();
+    t.panel.root.querySelector<HTMLButtonElement>('[aria-label="Load full tree for search"]')?.click();
+    await vi.waitFor(() => expect(t.store.getSnapshot().nodesByPath["src/nested"].loaded).toBe(true)); await flush();
+    expect(t.panel.root.querySelector('[aria-label="Retry repository tree"]')).not.toBeNull();
+    t.panel.root.querySelector<HTMLElement>('[role="treeitem"][data-path="src"]')?.click(); await flush();
+    expect(t.store.getSnapshot().nodesByPath.src.expanded).toBe(false);
+    expect(t.panel.root.querySelector('[aria-label="Retry repository tree"]')).not.toBeNull();
+    t.actions.onRetryDirectory?.("src"); await flush();
+    expect(t.panel.root.querySelector('[aria-label="Retry repository tree"]')).toBeNull();
+  });
+  it("width-only panel changes preserve another tab's latest untouched open setting", async () => {
+    const t = setup(); await t.navigateTo(url()); await flush();
+    await createPreferenceStore(t.storage).save({ panelOpen: false });
+    t.panel.root.querySelector<HTMLElement>('.resizer')?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(2));
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 316 } });
+  });
+  it("open-only panel changes preserve another tab's latest untouched width setting", async () => {
+    const t = setup(); await t.navigateTo(url()); await flush();
+    await createPreferenceStore(t.storage).save({ panelWidth: 460 });
+    t.panel.root.querySelector<HTMLButtonElement>('[aria-label="Collapse repository tree"]')?.click();
+    await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(2));
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 460 } });
+  });
+  it("successfully persisted local fields stop being dirty before later cross-tab saves", async () => {
+    const t = setup(); await t.navigateTo(url()); await flush();
+    t.panel.root.querySelector<HTMLButtonElement>('[aria-label="Collapse repository tree"]')?.click();
+    await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(1));
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 300 } });
+    await createPreferenceStore(t.storage).save({ panelOpen: true });
+    t.panel.root.querySelector<HTMLElement>('.resizer')?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(3));
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: true, panelWidth: 316 } });
+  });
+  it("failed local width recovery still merges an untouched external open value from current storage", async () => {
+    const t = setup(); await t.navigateTo(url()); await flush();
+    t.storage.set.mockRejectedValueOnce(new Error("synthetic storage failure"));
+    t.panel.root.querySelector<HTMLElement>('.resizer')?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await vi.waitFor(() => expect(t.panel.root.textContent).toContain("not saved"));
+    await createPreferenceStore(t.storage).save({ panelOpen: false });
+    t.panel.root.querySelector<HTMLElement>('.resizer')?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await vi.waitFor(() => expect(t.panel.root.textContent).not.toContain("not saved"));
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 332 } });
+  });
+  it("queued width changes do not replay an earlier open intent once it has persisted", async () => {
+    const t = setup(); await t.navigateTo(url()); await flush();
+    const gate = deferred<undefined>(); const persist = t.storage.set.getMockImplementation();
+    if (!persist) throw new Error("Missing synthetic storage writer");
+    t.storage.set.mockImplementationOnce(async (items) => {
+      await gate.promise; await persist(items);
+      // The other tab changes open after this write but before the queued width save reads storage.
+      await createPreferenceStore(t.storage).save({ panelOpen: true });
+    });
+    t.panel.root.querySelector<HTMLButtonElement>('[aria-label="Collapse repository tree"]')?.click();
+    await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(1));
+    t.panel.root.querySelector<HTMLElement>('.resizer')?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    gate.resolve(undefined);
+    await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(3));
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: true, panelWidth: 316 } });
+  });
+  it("same-valued newer user intent remains dirty until its own pending save succeeds", async () => {
+    const t = setup(); await t.navigateTo(url()); await flush();
+    const gate = deferred<undefined>(); const failed = deferred<undefined>(); const recovered = deferred<undefined>();
+    const persist = t.storage.set.getMockImplementation();
+    if (!persist) throw new Error("Missing synthetic storage writer");
+    t.storage.set.mockImplementationOnce(async (items) => {
+      await gate.promise; await persist(items);
+      await createPreferenceStore(t.storage).save({ panelOpen: true });
+    });
+    t.panel.root.querySelector<HTMLButtonElement>('[aria-label="Collapse repository tree"]')?.click();
+    await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(1));
+    t.panel.root.querySelector<HTMLButtonElement>('[aria-label="Open repository tree"]')?.click();
+    t.panel.root.querySelector<HTMLButtonElement>('[aria-label="Collapse repository tree"]')?.click();
+    // The external write is first, followed by the queued true then false local intentions.
+    t.storage.set.mockImplementationOnce(persist).mockReturnValueOnce(failed.promise)
+      .mockImplementationOnce(async (items) => { await recovered.promise; await persist(items); });
+    gate.resolve(undefined); await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(3));
+    failed.reject(new Error("synthetic save failure"));
+    await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(4)); await flush();
+    expect(t.panel.root.textContent).toContain("not saved");
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: true, panelWidth: 300 } });
+    recovered.resolve(undefined);
+    await vi.waitFor(() => expect(t.panel.root.textContent).not.toContain("not saved"));
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 300 } });
+  });
 });

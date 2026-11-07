@@ -131,6 +131,13 @@ try {
   assert.deepEqual(await evaluate("syntheticStored"), { "repotreex.preferences": { panelOpen: false, panelWidth: 316 } });
   await evaluate(`${root}.querySelector('[aria-label="Open repository tree"]').click()`);
   await wait("syntheticStored['repotreex.preferences'].panelOpen === true");
+  // Another tab's completed open write must survive this tab's width-only save.
+  const writesBeforeExternal = await evaluate("syntheticWrites.length");
+  await evaluate(`syntheticStored['repotreex.preferences'].panelOpen=false;
+    ${root}.querySelector('.resizer').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));`);
+  await wait(`syntheticWrites.length === ${writesBeforeExternal + 1}`);
+  assert.deepEqual(await evaluate("syntheticStored"), { "repotreex.preferences": { panelOpen: false, panelWidth: 332 } });
+  assert.equal(await evaluate("document.getElementById('repotreex-root').dataset.open"), "true");
   // Detached same-session traversal still owns the throttle, not selection.
   mode = "delay"; await evaluate(`${root}.querySelector('[aria-label="Load full tree for search"]').click()`);
   await wait(`${root}.querySelector('[data-path="docs"]').getAttribute('aria-busy') === 'true'`);
@@ -163,6 +170,12 @@ try {
   mode = "normal";
   await evaluate(`${root}.querySelector('[aria-label="Load full tree for search"]').click()`);
   await wait(`${root}.querySelector('[aria-label="Load full tree for search"]') !== null && ${root}.querySelector('[data-path="docs/guide.md"]') !== null`);
+  assert.notEqual(await evaluate(`${root}.querySelector('[aria-label="Retry repository tree"]')`), null);
+  assert.equal(await evaluate(`${root}.querySelector('[aria-selected="true"]')`), null);
+  const requestsBeforeCollapse = apiRequests.length;
+  await evaluate(`${root}.querySelector('[role="treeitem"][data-path="docs"]').click()`);
+  await wait(`${root}.querySelector('[role="treeitem"][data-path="docs"]').getAttribute('aria-expanded') === 'false'`);
+  assert.equal(apiRequests.length, requestsBeforeCollapse);
   assert.notEqual(await evaluate(`${root}.querySelector('[aria-label="Retry repository tree"]')`), null);
   assert.equal(await evaluate(`${root}.querySelector('[aria-selected="true"]')`), null);
   await evaluate(`${root}.querySelector('[aria-label="Retry repository tree"]').click()`);
@@ -258,5 +271,5 @@ try {
   assert.equal(await evaluate("Object.hasOwn(window, Symbol.for('repotreex.instance'))"), false);
   assert.deepEqual(errors, []);
   assert.equal(expectedHttpDiagnostics.length, 6);
-  console.log("PASS built entry in Chromium MAIN/isolated worlds: nested/slash refs, sequential ancestors, SPA cache, search, cumulative preference recovery, matching retry/reveal, search error ownership, late same-session 429 gating, BFCache persisted-event scrub/fresh-channel resume, refresh, traversal rate/retry/cancel, stale lifetime data, canonical ref fallback, auth clearing, reinjection and invalidation; synthetic traffic only, no application console errors (expected injected 401/429/503 browser diagnostics).");
+  console.log("PASS built entry in Chromium MAIN/isolated worlds: nested/slash refs, sequential ancestors, SPA cache, search, dirty-only cross-tab preference recovery, matching retry/reveal, collapse-only preservation, search error ownership, late same-session 429 gating, BFCache persisted-event scrub/fresh-channel resume, refresh, traversal rate/retry/cancel, stale lifetime data, canonical ref fallback, auth clearing, reinjection and invalidation; synthetic traffic only, no application console errors (expected injected 401/429/503 browser diagnostics).");
 } finally { await cdp.detach(); await page.close(); await browser.close(); }
