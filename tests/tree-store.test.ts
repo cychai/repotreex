@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBridgeClient } from "../src/content/bridge-client";
 import { createSessionProvider, type DirectoryListing, type RepositoryProvider } from "../src/content/provider";
-import { createTreeStore, type TreeStore } from "../src/content/tree-store";
+import { createTreeStore, type TreeSnapshot, type TreeStore } from "../src/content/tree-store";
 import { RepositoryError } from "../src/shared/errors";
 import { BRIDGE_REQUEST_EVENT, BRIDGE_RESPONSE_EVENT, type BridgeRequest } from "../src/shared/protocol";
 import { treeFixture } from "./fixtures/repository";
@@ -422,7 +422,7 @@ describe("tree store", () => {
     const listing: DirectoryListing = { path: "", sha: "root-sha", entries: [
       { kind: "directory", name: "src", path: "src", sha: "src-sha" },
     ] };
-    const { store } = setup(async () => listing);
+    const { store } = setup(async (_repo, _ref, path) => path === "" ? listing : source);
     store.startSession("acme/repo", "main");
     await store.loadDirectory("");
     const snapshot = store.getSnapshot();
@@ -439,8 +439,18 @@ describe("tree store", () => {
     expect(store.getSnapshot().nodesByPath.src.name).toBe("src");
     expect(store.getSnapshot()).toBe(snapshot);
     await store.toggleDirectory("src");
-    expect(snapshot.nodesByPath.src.expanded).toBe(false);
+    const expandedSnapshot = store.getSnapshot();
+    expect(expandedSnapshot).not.toBe(snapshot);
+    expect(expandedSnapshot.nodesByPath.src).toMatchObject({
+      path: "src", name: "src", sha: "src-sha", parentPath: "", depth: 1,
+      loaded: true, expanded: true, childPaths: ["src/nested", "src/index.ts"],
+    });
+    expect(expandedSnapshot.nodesByPath["src/index.ts"]).toMatchObject({ parentPath: "src", depth: 2 });
+    expect(expandedSnapshot.visibleNodes.map((entry) => entry.path)).toEqual(["src", "src/nested", "src/index.ts"]);
+    expect(snapshot.nodesByPath.src).toMatchObject({ expanded: false, loaded: false, childPaths: [] });
     expect(snapshot.expandedPaths).toEqual([]);
+    expect(snapshot.visibleNodes.map((entry) => entry.path)).toEqual(["src"]);
+    expect(Object.hasOwn(snapshot.nodesByPath, "src/index.ts")).toBe(false);
   });
 
   it("freezes detached error snapshots without freezing or sharing the thrown error", async () => {
@@ -595,6 +605,223 @@ describe("tree store", () => {
     expect(provider.dispose).toHaveBeenCalledTimes(1);
     expect(() => store.startSession("acme/repo", "main")).toThrow(RepositoryError);
     store.dispose();
+  });
+
+  it.each(["clear", "dispose"] as const)("notifies every consumer before propagating failures during %s", async (action) => {
+    const response = deferred<DirectoryListing>();
+    let pendingSignal: AbortSignal | undefined;
+    const { store, provider } = setup((_repo, _ref, path, signal) => {
+      if (path === "") return Promise.resolve(root);
+      pendingSignal = signal;
+      return response.promise;
+    });
+    store.startSession("acme/repo", "main");
+    await store.loadDirectory("");
+    store.selectPath("README.md");
+    const load = store.toggleDirectory("src");
+    const cancelled = expect(load).rejects.toMatchObject({ code: "cancelled" });
+    await Promise.resolve();
+    let panelSnapshot: TreeSnapshot | null = store.getSnapshot();
+    const panel = document.createElement("div");
+    panel.textContent = panelSnapshot.visibleNodes.map((node) => node.path).join("\n");
+    const events: string[] = [];
+    const firstError = new Error("synthetic first notification failure");
+    const secondError = new Error("synthetic second notification failure");
+    const unsubscribeFirst = store.subscribe(() => {
+      events.push("first");
+      throw firstError;
+    });
+    const unsubscribeSecond = store.subscribe(() => {
+      events.push("second");
+      throw secondError;
+    });
+    store.subscribe(() => {
+      events.push("panel");
+      if (store.getSnapshot().repo === null) {
+        panelSnapshot = null;
+        panel.replaceChildren();
+      }
+    });
+    store.subscribe(() => {
+      events.push("last");
+      expectCleared(store);
+      expect(pendingSignal?.aborted).toBe(true);
+    });
+    let thrown: unknown;
+    try {
+      if (action === "clear") store.clearSensitiveData();
+      else store.dispose();
+    } catch (error) {
+      thrown = error;
+    } finally {
+      unsubscribeFirst();
+      unsubscribeSecond();
+    }
+    await cancelled;
+    expect(events).toEqual(["first", "second", "panel", "last"]);
+    expect(thrown).toBeInstanceOf(AggregateError);
+    if (!(thrown instanceof AggregateError)) throw new Error("expected notification aggregate");
+    expect(thrown.errors).toEqual([firstError, secondError]);
+    expect(panelSnapshot).toBeNull();
+    expect(panel.textContent).toBe("");
+    expectCleared(store);
+    expect(provider.dispose).toHaveBeenCalledTimes(action === "dispose" ? 1 : 0);
+    if (action === "dispose") {
+      store.dispose();
+      store.clearSensitiveData();
+      expect(events).toHaveLength(4);
+      expect(() => store.startSession("acme/new", "main")).toThrow(RepositoryError);
+    }
+    response.resolve(source);
+    await Promise.resolve();
+    await Promise.resolve();
+    expectCleared(store);
+  });
+
+  it.each(["signed-out", "forbidden"] as const)("fans out auth clearing despite throwing subscribers and preserves %s rejection", async (code) => {
+    const sourceResponse = deferred<DirectoryListing>();
+    const docsResponse = deferred<DirectoryListing>();
+    const signals: AbortSignal[] = [];
+    const { store } = setup((_repo, _ref, path, signal) => {
+      if (signal) signals.push(signal);
+      return path === "" ? Promise.resolve(root) : path === "src" ? sourceResponse.promise : docsResponse.promise;
+    });
+    store.startSession("acme/repo", "main");
+    await store.loadDirectory("");
+    store.selectPath("README.md");
+    const pendingLoad = store.toggleDirectory("src");
+    const cancelled = expect(pendingLoad).rejects.toMatchObject({ code: "cancelled" });
+    const authLoad = store.toggleDirectory("docs");
+    await Promise.resolve();
+    let panelSnapshot: TreeSnapshot | null = store.getSnapshot();
+    const panel = document.createElement("div");
+    panel.textContent = "README.md";
+    const events: string[] = [];
+    const firstError = new Error("synthetic first auth notification failure");
+    const secondError = new Error("synthetic second auth notification failure");
+    const unsubscribeFirst = store.subscribe(() => { events.push("first"); throw firstError; });
+    const unsubscribeSecond = store.subscribe(() => { events.push("second"); throw secondError; });
+    store.subscribe(() => {
+      events.push("panel");
+      if (store.getSnapshot().repo === null) {
+        panelSnapshot = null;
+        panel.replaceChildren();
+      }
+    });
+    store.subscribe(() => { events.push("last"); });
+    const authError = new RepositoryError(code, { status: code === "signed-out" ? 401 : 403 });
+    const failed = expect(authLoad).rejects.toBe(authError);
+    try {
+      docsResponse.reject(authError);
+      await failed;
+      await cancelled;
+      expect(events).toEqual(["first", "second", "panel", "last"]);
+      expect(panelSnapshot).toBeNull();
+      expect(panel.textContent).toBe("");
+      expect(signals.slice(1).every((signal) => signal.aborted)).toBe(true);
+      expectCleared(store);
+      sourceResponse.resolve(source);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(events).toHaveLength(4);
+      expectCleared(store);
+    } finally {
+      unsubscribeFirst();
+      unsubscribeSecond();
+    }
+  });
+
+  it("fans out after a subscriber throws undefined and propagates that exact failure", () => {
+    const { store } = setup();
+    store.startSession("acme/repo", "main");
+    let notified = false;
+    let caught = false;
+    const unsubscribe = store.subscribe(() => { throw undefined; });
+    store.subscribe(() => { notified = true; });
+    try {
+      store.clearSensitiveData();
+    } catch (error) {
+      caught = true;
+      expect(error).toBeUndefined();
+    } finally {
+      unsubscribe();
+    }
+    expect(caught).toBe(true);
+    expect(notified).toBe(true);
+    expectCleared(store);
+  });
+
+  it("retains both notification and provider disposal failures after fan-out and cleanup", () => {
+    const { store, provider } = setup();
+    store.startSession("acme/repo", "main");
+    const notificationError = new Error("synthetic disposal notification failure");
+    const disposalError = new Error("synthetic provider disposal failure");
+    const events: string[] = [];
+    store.subscribe(() => { events.push("first"); throw notificationError; });
+    store.subscribe(() => { events.push("last"); expectCleared(store); });
+    vi.mocked(provider.dispose).mockImplementation(() => { events.push("provider"); throw disposalError; });
+    let thrown: unknown;
+    try {
+      store.dispose();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(events).toEqual(["first", "last", "provider"]);
+    expect(thrown).toBeInstanceOf(AggregateError);
+    if (!(thrown instanceof AggregateError)) throw new Error("expected disposal aggregate");
+    expect(thrown.errors).toEqual([notificationError, disposalError]);
+    store.dispose();
+    store.clearSensitiveData();
+    expect(events).toHaveLength(3);
+    expect(provider.dispose).toHaveBeenCalledTimes(1);
+    expect(() => store.startSession("acme/new", "main")).toThrow(RepositoryError);
+  });
+
+  it("fans out a directory error while preserving the original provider rejection", async () => {
+    const error = new RepositoryError("network");
+    const { store } = setup(async () => { throw error; });
+    store.startSession("acme/repo", "main");
+    const events: string[] = [];
+    const unsubscribeFirst = store.subscribe(() => {
+      if (store.getSnapshot().nodesByPath[""].error) {
+        events.push("first");
+        throw new Error("synthetic row notification failure");
+      }
+    });
+    store.subscribe(() => {
+      if (store.getSnapshot().nodesByPath[""]?.error) events.push("last");
+    });
+    try {
+      await expect(store.loadDirectory("")).rejects.toBe(error);
+      expect(events).toEqual(["first", "last"]);
+      expect(store.getSnapshot().nodesByPath[""]).toMatchObject({ loading: false, loaded: false, error: { code: "network" } });
+    } finally {
+      unsubscribeFirst();
+    }
+  });
+
+  it("excludes subscribers removed during fan-out and defers newly added subscribers", () => {
+    const { store } = setup();
+    store.startSession("acme/repo", "main");
+    const events: string[] = [];
+    const error = new Error("synthetic fan-out failure");
+    let unsubscribeRemoved: () => void = () => undefined;
+    const unsubscribeFirst = store.subscribe(() => {
+      events.push("first");
+      unsubscribeRemoved();
+      store.subscribe(() => { events.push("new"); });
+      throw error;
+    });
+    unsubscribeRemoved = store.subscribe(() => { events.push("removed"); });
+    store.subscribe(() => { events.push("last"); });
+    try {
+      expect(() => store.clearSensitiveData()).toThrow(error);
+      expect(events).toEqual(["first", "last"]);
+    } finally {
+      unsubscribeFirst();
+    }
+    store.clearSensitiveData();
+    expect(events).toEqual(["first", "last", "last", "new"]);
   });
 
   it("propagates a throwing loading subscriber without leaking a request or leaving loading stuck", async () => {

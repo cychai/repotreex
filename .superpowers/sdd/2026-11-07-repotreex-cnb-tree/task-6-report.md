@@ -198,3 +198,136 @@ git commit --no-verify -F .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-6-
 ```
 
 Commit title: `feat: manage repository trees in tab memory`. The resulting hash is returned in the final response; this report is part of that commit, avoiding a self-referential embedded hash. The ignored task-local commit-message file is not staged.
+
+## Fix round 1
+
+### Status and review findings
+
+Implemented and validated on top of `991fb77` in the existing `feature/repotreex-cnb-tree` worktree. No subagents, unrelated changes, push, or original-checkout edits.
+
+The Important finding was reproduced: `publish()` stopped at the first exception, preventing later panel consumers from releasing sensitive snapshots and DOM on explicit clearing, authorization failure, and disposal. The Minor fixture defect was also reproduced with stronger new-state assertions: the immutability test returned the root listing for a `src` request, so the supposedly expanded node had root SHA and no matching children.
+
+### Changed files
+
+- `src/content/tree-store.ts`: notify all eligible listeners before propagating failures; preserve sole thrown value verbatim and aggregate multiple notification failures. Disposal performs clearing/fan-out, subscriber removal, and provider disposal before propagating or aggregating cleanup failures. Document existing provider-error precedence.
+- `tests/tree-store.test.ts`: eight new regression cases (55 -> 57 includes a second self-review red/green cycle; original total 49 -> 57), plus the repaired immutability fixture and stronger assertions.
+- `.superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-6-report.md`: append this fix-round evidence.
+
+### Deliberate error precedence
+
+1. `publish()` snapshots listeners at publication start, skips listeners explicitly removed before their turn, and defers newly added listeners to the next publication. It catches only individual synchronous listener calls, collects their actual thrown values, finishes fan-out, then throws the single original value or an `AggregateError` containing all failures in subscription order. `throw undefined` remains a real failure, not a sentinel mistaken for success.
+2. Direct `clearSensitiveData()` first invalidates the session, clears private data, and aborts pending work, then completes eligible subscriber fan-out before propagating notification failure. The failure collection is call-local; it is not stored, serialized, or logged.
+3. Auth/provider operations preserve their original provider rejection identity. Existing failure settlement records that rejection before synchronous state cleanup/publication; Promise rejection reactions cannot run until the synchronous cleanup and full fan-out finish. Later notification failures cannot overwrite the provider error. This intentional primary-error precedence remains unchanged; no success-shaped fallback or extra unhandled rejection channel was introduced.
+4. `dispose()` marks the store disposed before fan-out, clears data/aborts, removes subscribers regardless of clearing notification failure, and always attempts provider disposal. A sole cleanup failure propagates unchanged; if notification and provider disposal both fail, a disposal `AggregateError` retains both rather than the provider's exception replacing the notification failure. Repeated disposal remains a no-op.
+
+### Covering tests and self-review
+
+- Explicit clear/dispose with two early throwing subscribers followed by a panel consumer and a final consumer: all four run, the panel releases its held `TreeSnapshot` and clears its DOM, cancellation signal is already aborted during the final callback, and both notification failures are retained. Dispose removes subscribers and disposes the provider once even on failure; late provider success cannot restore state.
+- Both signed-out and forbidden: two earlier throwing subscribers cannot prevent later consumers clearing their snapshots/DOM; the original auth `RepositoryError` remains the rejection; other pending requests cancel; late results do not publish.
+- A subscriber throwing `undefined`: later consumer still notified and exact thrown value propagated.
+- Unsubscribe/new-subscribe during fan-out: removed callback is excluded, later eligible callback still runs, and newly added callback runs only on the next publication.
+- A non-auth network provider rejection retains original identity while later consumers receive the retryable row state despite an earlier failing subscriber.
+- A simultaneous notification/provider-disposal failure retains both failures after full fan-out, removes subscribers, leaves the store cleared/disposed, and attempts provider disposal only once.
+- Immutability fixture now returns the matching `source` listing for `src`. New snapshot asserts actual child paths, SHA, parent/depth, expanded/loaded status, and visible order. Old snapshot retains unloaded/unexpanded empty children, unchanged visible rows, and no newly added child key.
+
+Self-review found the existing `finally` provider disposal could mask an earlier notification failure if both cleanup steps threw. A new regression failed before changing disposal to collect and propagate both. No remaining blocking findings in this fix scope. Provider DTO validation, bridge protocol, persistence, permissions, and bootstrap are unchanged.
+
+### TDD red evidence
+
+Tests and stronger Minor assertions were added before the production fix:
+
+```text
+$ npx --yes -p node@24 -c 'npm test -- tests/tree-store.test.ts'
+> repotreex@0.1.0 test
+> vitest run tests/tree-store.test.ts
+RUN v5.1.0 /Users/bytedance/.codex/worktrees/repotreex-cnb-tree/repotreex
+Tests 7 failed | 48 passed (55)
+FAIL freezes every snapshot surface and copies provider entries
+Expected childPaths ["src/nested", "src/index.ts"] and sha "src-sha";
+received childPaths [] and sha "root-sha".
+FAIL clear/dispose/auth fan-out cases
+AssertionError: expected [ 'first' ] to deeply equal [ 'first', 'second', 'panel', 'last' ]
+FAIL undefined failure fan-out
+AssertionError: expected false to be true
+FAIL unsubscribe/new-subscribe fan-out
+AssertionError: expected [ 'first' ] to deeply equal [ 'first', 'last' ]
+Start at 14:06:24
+Duration 419ms
+Exit 1
+```
+
+Corrected an initial fixture edit that matched the sorting test's similar setup line rather than the intended immutability setup; restored the sorting fixture and repaired only the immutability fixture. First green had 55 focused and 466 full tests, both typechecks and lint passing.
+
+Added simultaneous cleanup-failure regression before changing disposal:
+
+```text
+$ npx --yes -p node@24 -c 'npm test -- tests/tree-store.test.ts'
+Tests 1 failed | 56 passed (57)
+FAIL retains both notification and provider disposal failures after fan-out and cleanup
+AssertionError: expected Error: synthetic provider disposal failure to be an instance of AggregateError
+Start at 14:07:32
+Duration 414ms
+Exit 1
+```
+
+### Exact final validation commands/output
+
+```text
+$ npx --yes -p node@24 -c 'npm test -- tests/tree-store.test.ts && npm run typecheck && npm run lint'
+> repotreex@0.1.0 test
+> vitest run tests/tree-store.test.ts
+RUN v5.1.0 /Users/bytedance/.codex/worktrees/repotreex-cnb-tree/repotreex
+Test Files 1 passed (1)
+Tests 57 passed (57)
+Start at 14:07:49
+Duration 556ms
+> repotreex@0.1.0 typecheck
+> tsc --noEmit && tsc --noEmit -p tsconfig.tools.json
+> repotreex@0.1.0 lint
+> eslint src tests scripts
+Exit 0
+
+$ npx --yes -p node@24 -c 'npm test'
+> repotreex@0.1.0 test
+> vitest run
+RUN v5.1.0 /Users/bytedance/.codex/worktrees/repotreex-cnb-tree/repotreex
+Test Files 8 passed (8)
+Tests 468 passed (468)
+Start at 14:07:49
+Duration 895ms
+Exit 0
+
+$ npx --yes -p node@24 -c 'esbuild src/content/tree-store.ts --bundle --platform=browser --target=chrome120 --format=iife --log-level=info > /dev/null'
+(no output)
+Exit 0
+
+$ git diff --check
+(no output)
+Exit 0
+```
+
+No unhandled errors/rejections in green. Full suite includes packaging reproducibility; standalone browser-target bundling covers the store while bootstrap remains a placeholder.
+
+### Concerns and commit
+
+No blocking concerns. Callers still must release retained immutable snapshots/DOM when notified; notifications cannot force a deliberately misbehaving consumer to erase its own references. Primary provider rejection precedence is intentional; synchronous explicit clear/dispose callers receive notification/cleanup failures only after required work completes. All fixtures are synthetic and no metadata logging/persistence was added.
+
+Commit title: `fix: complete secure tree-store notification fan-out`. Only the store, tests, and report are staged. Known missing pre-commit script workaround remains authorized; commit evidence follows.
+
+```text
+$ git diff --cached --check
+(no output)
+Exit 0
+
+$ git commit -F .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-6-fix-round-1-commit-message.txt
+bash: script/pre_commit_checks.sh: No such file or directory
+Exit 1
+```
+
+Normal commit failed only for the confirmed missing script. Retrying with the authorized workaround:
+
+```text
+git commit --no-verify -F .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-6-fix-round-1-commit-message.txt
+```
+
+SDD report staging requires `git add -f` because the enclosing directory is ignored; only the named report is included. Commit hash is returned in the final response. No commit-message file or generated artifact is staged.

@@ -101,9 +101,18 @@ export function createTreeStore(provider: RepositoryProvider): TreeStore {
 
   const publish = () => {
     snapshot = undefined;
+    const failures: unknown[] = [];
     for (const listener of [...subscribers]) {
-      if (subscribers.has(listener)) listener();
+      if (!subscribers.has(listener)) continue;
+      try {
+        listener();
+      } catch (error) {
+        failures.push(error);
+      }
     }
+    // Security-clearing consumers must all run before any notification failure escapes.
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Subscriber notification failed");
   };
 
   const ensureActive = () => {
@@ -180,7 +189,8 @@ export function createTreeStore(provider: RepositoryProvider): TreeStore {
     }
     const node = nodes.get(request.path);
     finishRequest(request);
-    // Settle with the provider's error even if a notification throws during cleanup.
+    // Provider rejection takes precedence over notification failures. Promise reactions
+    // run only after the synchronous clearing/fan-out below has completed.
     request.reject(error);
     if (error instanceof RepositoryError && (error.code === "signed-out" || error.code === "forbidden")) {
       request.controller.abort();
@@ -301,12 +311,20 @@ export function createTreeStore(provider: RepositoryProvider): TreeStore {
     dispose() {
       if (disposed) return;
       disposed = true;
+      const failures: unknown[] = [];
       try {
         clearSensitiveData();
-      } finally {
-        subscribers.clear();
-        provider.dispose();
+      } catch (error) {
+        failures.push(error);
       }
+      subscribers.clear();
+      try {
+        provider.dispose();
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Store disposal failed");
     },
   };
 }
