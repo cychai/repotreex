@@ -146,6 +146,13 @@ describe("buildBlobUrl", () => {
     );
   });
 
+  it("reserves the dash marker only in repository segments", () => {
+    const route = { kind: "repository", repo: "acme/repo", ref: null, filePath: null } as const;
+    expect(buildBlobUrl(route, "release/-/v1", "src/-/a.ts").href).toBe(
+      "https://cnb.cool/acme/repo/-/blob/release%2F-%2Fv1/src/-/a.ts",
+    );
+  });
+
   it("rejects unsafe repository, ref, and path inputs", () => {
     const validRoute = {
       kind: "repository",
@@ -161,6 +168,7 @@ describe("buildBlobUrl", () => {
       "acme/./repo",
       "acme/../repo",
       "acme\\repo",
+      "acme/-/repo",
     ];
     const invalidRefs = [
       "",

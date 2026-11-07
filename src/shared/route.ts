@@ -74,11 +74,19 @@ function decodeSegments(segments: string[]): string[] | null {
   return decoded.some((segment) => segment === null) ? null : (decoded as string[]);
 }
 
-function validatedSegments(value: string, minimum: number, label: string): string[] {
+function validatedSegments(
+  value: string,
+  minimum: number,
+  label: string,
+  rejectRouteMarker = false,
+): string[] {
   const segments = value.split("/");
   if (
     segments.length < minimum ||
-    segments.some((segment) => !isSafeSegment(segment) || segment.includes("\\"))
+    segments.some(
+      (segment) =>
+        !isSafeSegment(segment) || (rejectRouteMarker && segment === "-") || segment.includes("\\"),
+    )
   ) {
     throw new TypeError(`Invalid ${label}`);
   }
@@ -181,7 +189,7 @@ export function parseCnbRoute(url: URL, hints: RouteHints = {}): CnbRoute {
 }
 
 export function buildBlobUrl(route: RepositoryRoute, ref: string, path: string): URL {
-  const repoSegments = validatedSegments(route.repo, 2, "repository");
+  const repoSegments = validatedSegments(route.repo, 2, "repository", true);
   const refSegments = validatedSegments(ref, 1, "ref");
   const pathSegments = validatedSegments(path, 1, "path");
   const repo = repoSegments.map(encodeURIComponent).join("/");
