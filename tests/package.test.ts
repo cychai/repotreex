@@ -8,8 +8,7 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { buildPackage } from "../scripts/package.mjs";
 import packageMetadata from "../package.json";
-
-const projectRoot = path.resolve(import.meta.dirname, "..");
+import { createBuildFixture, createTemporaryRootModel, runProgrammaticOutput } from "./helpers/build-fixture";
 
 const expectedArchiveEntries = [
   "assets/icon-128.png",
@@ -111,26 +110,51 @@ describe("extension package", () => {
   });
 
   it("rejects a real non-temporary output root before creating extension or archive", async () => {
-    const outputRoot = await mkdtemp(path.join(projectRoot, ".superpowers/package-safety-"));
+    const parent = await mkdtemp(path.join(tmpdir(), "repotreex-package-safety-"));
     try {
-      await expect(buildPackage({ outputRoot })).rejects.toThrow(/canonical OS temporary root/i);
+      const root = await createBuildFixture(parent);
+      const { osTemporaryRoot, outsideRoot: outputRoot } = await createTemporaryRootModel(parent);
+      await expect(runProgrammaticOutput(root, "buildPackage", { outputRoot }, osTemporaryRoot)).rejects.toThrow(/canonical OS temporary root/i);
       expect(await readdir(outputRoot)).toEqual([]);
     } finally {
-      await rm(outputRoot, { force: true, recursive: true });
+      await rm(parent, { force: true, recursive: true });
+    }
+  });
+
+  it("packages only inside the explicitly selected canonical OS temporary root", async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), "repotreex-package-safety-"));
+    try {
+      const root = await createBuildFixture(parent);
+      const { osTemporaryRoot } = await createTemporaryRootModel(parent);
+      const outputRoot = path.join(osTemporaryRoot, "package");
+      await mkdir(outputRoot);
+
+      await runProgrammaticOutput(root, "buildPackage", { outputRoot }, osTemporaryRoot);
+
+      const { stdout } = await execFileAsync("unzip", ["-Z1", path.join(outputRoot, "repotreex-0.1.0.zip")]);
+      expect(stdout.trim().split("\n").sort()).toEqual(expectedArchiveEntries);
+      await expect(runProgrammaticOutput(root, "buildPackage", {
+        outputRoot: osTemporaryRoot,
+      }, osTemporaryRoot)).rejects.toThrow(/canonical OS temporary root/i);
+      expect(await readdir(osTemporaryRoot)).toEqual(["package"]);
+    } finally {
+      await rm(parent, { force: true, recursive: true });
     }
   });
 
   it("rejects a temporary symlink ancestor redirected outside OS temporary storage", async () => {
     const parent = await mkdtemp(path.join(tmpdir(), "repotreex-package-safety-"));
-    const target = await mkdtemp(path.join(projectRoot, ".superpowers/package-safety-"));
     try {
+      const root = await createBuildFixture(parent);
+      const { osTemporaryRoot, outsideRoot: target } = await createTemporaryRootModel(parent);
       await mkdir(path.join(target, "output"));
-      await symlink(target, path.join(parent, "redirect"));
-      await expect(buildPackage({ outputRoot: path.join(parent, "redirect/output") })).rejects.toThrow(/symbolic link/i);
+      await symlink(target, path.join(osTemporaryRoot, "redirect"));
+      await expect(runProgrammaticOutput(root, "buildPackage", {
+        outputRoot: path.join(osTemporaryRoot, "redirect/output"),
+      }, osTemporaryRoot)).rejects.toThrow(/symbolic link/i);
       expect(await readdir(path.join(target, "output"))).toEqual([]);
     } finally {
       await rm(parent, { force: true, recursive: true });
-      await rm(target, { force: true, recursive: true });
     }
   });
 

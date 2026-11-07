@@ -495,3 +495,112 @@ same-user process can still race filesystem checks; build roots must not be
 concurrently redirected. Failed programmatic builds/packages may leave partial
 output for callers to inspect and remove. Live QQ Browser/Chrome/private-CNB QA
 remains unrun and governed by the existing manual matrix.
+
+## Fix round 5
+
+Final implementer takeover on top of `7355668`, in the existing
+`feature/repotreex-cnb-tree` worktree. All three open findings are addressed.
+No subagents, new Git worktree, push, dependency change, production-source
+change, permission expansion, live CNB request, OAuth activation, or browser
+installation was performed.
+
+### Runtime-expression coverage and lexical identity
+
+- Global-holder capture is recognized in every initializer-bearing AST node,
+  including function/arrow parameters, nested object/array binding defaults,
+  class fields, object properties, and destructuring-assignment shorthand
+  defaults. Parentheses, assertions, non-null and satisfies wrappers preserve
+  capture evidence. The exact reviewer `(holder = globalThis) => ...` form is
+  now a regression case.
+- Type erasure is decided by position for `ExpressionWithTypeArguments`, not
+  its kind alone. Executable class extends and TypeScript instantiation
+  expressions are traversed, while class implements, interface heritage,
+  generic constraints/defaults, type arguments, assertions' type operands,
+  and type-only imports/exports remain ignored.
+- Corrected shorthand symbol resolution so only the shorthand name uses its
+  captured-value symbol; the default initializer resolves its own identifier.
+  This prevents a local assignment target from incorrectly shadowing an
+  ambient global holder or browser root in the default expression.
+- Added exact reviewer and nearby cases for generic/class-expression heritage,
+  decorators (class, method and legacy parameter syntax), computed class
+  method/field names, static blocks/fields and enum initializers. Matching
+  local-holder/browser shadowing and pure-type cases remain silent. Existing
+  direct runtime/typeof identity exceptions are unchanged.
+- The scan is still an iterative AST walk with compiler-bound lexical identity,
+  no execution simulation or alias fixed point. Per-case one-second timeouts
+  and the existing 2,000-iteration alias-cycle regression passed without hangs.
+
+### Location-independent build/package fixtures
+
+- Removed assumptions that the project checkout or `.superpowers` is outside
+  OS temp. Tests create real canonical `os-temp` and `outside-temp` sibling
+  directories inside one exclusively owned fixture and run the unchanged
+  build/package scripts in a child process with TMPDIR/TMP/TEMP pinned to
+  `os-temp`. This tests actual validation and filesystem effects without
+  mocking guards or adding production test hooks.
+- Positive cases build/package within the selected root and check the manifest
+  or exact eight-entry ZIP. Negative cases reject the root itself, a real
+  sibling outside it, and symlink ancestors redirecting to that sibling before
+  creating artifacts. All fixture cleanup targets are dedicated generated
+  directories, never broad roots.
+- Default replacement remains no-argument and hard-coded; programmatic APIs
+  remain caller-created empty-leaf operations with no recursive replacement.
+  No build/package implementation or safety check was weakened or changed.
+
+### RED/GREEN evidence
+
+The initial privacy regression run failed 17 cases: global-holder initializer
+capture, executable heritage/instantiation, and type-only import/export false
+positives. Decorators/computed names/static blocks already walked correctly
+and their added regressions passed. Reproducing the original path tests with
+TMPDIR equal to the checkout failed two cases because both supposedly
+non-temporary roots were legitimately temporary. The corrected fixture model
+passes those cases in the same environment. An intermediate shorthand-default
+case exposed the symbol-resolution defect described above before correction.
+
+Final Node **24.22.2** focused validation: **147/147 tests**, 3/3 files passed;
+both TypeScript scopes and ESLint passed. This adds 50 tests to round 4.
+
+### Final validation
+
+Final full suite: **854/854 tests**, 15/15 files, in every configuration:
+
+1. Existing worktree, default TMPDIR, from absent `dist`; prior ignored dist
+   preserved/restored by rename and tests left dist absent.
+2. Existing worktree, fresh workspace-owned alternate TMPDIR.
+3. Existing worktree, TMPDIR exactly equal to the checkout (the original
+   location-assumption failure reproduction).
+4. Fresh temporary source checkout copy, default TMPDIR, no `.superpowers`
+   directory or prior dist.
+5. Same temporary checkout, sibling alternate TMPDIR.
+6. Same temporary checkout, ancestor TMPDIR containing the checkout.
+
+The copy is a disposable source fixture, not a new Git worktree. All three
+temporary-checkout runs left dist absent. Dedicated temporary fixture trees
+and an npm compile cache generated by the initial TMPDIR reproduction were
+removed; the pre-existing ignored dist was restored, then normally packaged.
+
+Commands were pinned with `npx --yes -p node@24.22.2`. The ignored local
+`task-11-round-5-check.mjs` driver records the clean-dist/alternate/checkouts
+setup and assertions. Final `npm run typecheck`, `npm run lint`,
+`npm run package`, `unzip -t`, `unzip -l`, an exact `unzip -Z1` eight-entry
+assertion, complete built/source manifest equality and `git diff --check`
+all passed. Existing reproducibility across UTC/Asia-Shanghai timezones,
+exact preference serialization, fresh bundle storage-user/key counts and
+manifest records passed in every full run.
+
+### Completion and remaining concerns
+
+Scanner fixes DONE; location-independent fixtures DONE; focused/full/environment
+matrix DONE; type/lint/package/archive checks DONE; report DONE. Commit is made
+after these checks; its identifier and actual hook outcome are returned in the
+final response. Normal hook is attempted first, with only the documented
+missing `script/pre_commit_checks.sh` failure eligible for `--no-verify`.
+
+The scanner remains a conservative architecture regression guard, not
+whole-program taint analysis or proof against eval/generated/obfuscated names.
+Filesystem TOCTOU races against a hostile same-user process remain outside the
+build contract; output roots must not be concurrently redirected. Validation
+was on macOS with the locked toolchain and an available `zip`/`unzip`; Linux
+and Windows were not exercised. Live QQ Browser/Chrome/private-CNB acceptance
+remains unrun under the existing manual matrix.

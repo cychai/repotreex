@@ -38,6 +38,34 @@ function unwrap(node: ts.Expression): ts.Expression {
   return node;
 }
 
+function isPureTypePosition(node: ts.Node): boolean {
+  // ExpressionWithTypeArguments is also used for executable class heritage
+  // and instantiation expressions. Its kind alone cannot decide erasure.
+  if (ts.isExpressionWithTypeArguments(node)) return ts.isPartOfTypeNode(node);
+  return ts.isTypeNode(node) || ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)
+    || ts.isTypeParameterDeclaration(node)
+    || (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly === true)
+    || (ts.isExportDeclaration(node) && node.isTypeOnly)
+    || (ts.isImportEqualsDeclaration(node) && node.isTypeOnly)
+    || (ts.isImportSpecifier(node) && node.isTypeOnly)
+    || (ts.isExportSpecifier(node) && node.isTypeOnly);
+}
+
+function isCapturedValue(node: ts.Identifier): boolean {
+  let value: ts.Node = node;
+  let parent = value.parent;
+  while ((ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent) || ts.isTypeAssertionExpression(parent)
+    || ts.isNonNullExpression(parent) || ts.isSatisfiesExpression(parent)) && parent.expression === value) {
+    value = parent;
+    parent = value.parent;
+  }
+  // All initializer-bearing nodes count, including parameters, binding
+  // defaults, class fields and object properties, not just local variables.
+  return ("initializer" in parent && parent.initializer === value)
+    || (ts.isShorthandPropertyAssignment(parent) && parent.objectAssignmentInitializer === value)
+    || (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken && parent.right === value);
+}
+
 // Architecture guard, deliberately NOT taint/dataflow analysis. An unshadowed
 // browser root is forbidden outside preferences.ts even when merely aliased or
 // passed to another function (except direct runtime/typeof identity checks).
@@ -64,7 +92,7 @@ export function findBrowserStorageReferences(source: string, filename: string): 
     findings.add(file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1);
   };
   const isAmbient = (node: ts.Identifier): boolean => {
-    const symbol = ts.isShorthandPropertyAssignment(node.parent)
+    const symbol = ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
       ? checker.getShorthandAssignmentValueSymbol(node.parent)
       : checker.getSymbolAtLocation(node);
     return !symbol || symbol.declarations?.every(isAmbientDeclaration) === true;
@@ -73,7 +101,7 @@ export function findBrowserStorageReferences(source: string, filename: string): 
   while (nodes.length > 0) {
     const node = nodes.pop();
     if (!node) break;
-    if (ts.isTypeNode(node) || ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) continue;
+    if (isPureTypePosition(node)) continue;
     if (ts.isIdentifier(node) && browserRoots.has(node.text) && isReferenceIdentifier(node)
       && !isRuntimeIdentityReference(node) && isAmbient(node)) {
       report(node);
@@ -85,12 +113,7 @@ export function findBrowserStorageReferences(source: string, filename: string): 
       }
       if (ts.isIdentifier(base) && globalHolders.has(base.text) && isAmbient(base)) report(node);
     }
-    const initializer = ts.isVariableDeclaration(node) ? node.initializer
-      : ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken ? node.right : undefined;
-    if (initializer) {
-      const value = unwrap(initializer);
-      if (ts.isIdentifier(value) && globalHolders.has(value.text) && isAmbient(value)) report(node);
-    }
+    if (ts.isIdentifier(node) && globalHolders.has(node.text) && isCapturedValue(node) && isAmbient(node)) report(node);
     // Exact root strings are conservative evidence too (constant/computed
     // global lookups). Ordinary "chrome.storage" text and comments are not.
     if (ts.isStringLiteralLike(node) && browserRoots.has(node.text)) report(node);

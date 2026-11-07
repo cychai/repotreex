@@ -8,7 +8,10 @@ import {
   prepareBuildOutput,
   validateBuildOutput,
 } from "../scripts/build.mjs";
-import { createBuildFixture, runBuildCli, runDefaultBuild, runReplacementWithOptions } from "./helpers/build-fixture";
+import {
+  createBuildFixture, createTemporaryRootModel, runBuildCli, runDefaultBuild,
+  runProgrammaticOutput, runReplacementWithOptions,
+} from "./helpers/build-fixture";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const temporaryRoots: string[] = [];
@@ -247,22 +250,42 @@ describe("build output safety", () => {
   });
 
   it("rejects canonical directories outside OS temporary storage before writing", async () => {
-    const safeRoot = await mkdtemp(path.join(projectRoot, ".superpowers/build-safety-"));
-    temporaryRoots.push(safeRoot);
+    const parent = await temporaryRoot();
+    const root = await createBuildFixture(parent);
+    const { osTemporaryRoot, outsideRoot: safeRoot } = await createTemporaryRootModel(parent);
     const outputRoot = path.join(safeRoot, "extension");
     await mkdir(outputRoot);
-    await expect(buildExtension({ safeRoot, outputRoot })).rejects.toThrow(/safe root/i);
+    await expect(runProgrammaticOutput(root, "buildExtension", { safeRoot, outputRoot }, osTemporaryRoot)).rejects.toThrow(/safe root/i);
     expect(await readdir(outputRoot)).toEqual([]);
+  });
+
+  it("builds only inside the explicitly selected canonical OS temporary root", async () => {
+    const parent = await temporaryRoot();
+    const root = await createBuildFixture(parent);
+    const { osTemporaryRoot } = await createTemporaryRootModel(parent);
+    const safeRoot = path.join(osTemporaryRoot, "build");
+    const outputRoot = path.join(safeRoot, "extension");
+    await mkdir(outputRoot, { recursive: true });
+
+    await runProgrammaticOutput(root, "buildExtension", { safeRoot, outputRoot }, osTemporaryRoot);
+
+    await expect(access(path.join(outputRoot, "manifest.json"))).resolves.toBeUndefined();
+    await expect(runProgrammaticOutput(root, "buildExtension", {
+      safeRoot: osTemporaryRoot, outputRoot: path.join(osTemporaryRoot, "other"),
+    }, osTemporaryRoot)).rejects.toThrow(/safe root/i);
+    expect(await readdir(osTemporaryRoot)).toEqual(["build"]);
   });
 
   it("rejects a temporary symlink ancestor redirected outside OS temporary storage", async () => {
     const parent = await temporaryRoot();
-    const target = await mkdtemp(path.join(projectRoot, ".superpowers/build-safety-"));
-    temporaryRoots.push(target);
+    const root = await createBuildFixture(parent);
+    const { osTemporaryRoot, outsideRoot: target } = await createTemporaryRootModel(parent);
     await mkdir(path.join(target, "root/extension"), { recursive: true });
-    await symlink(target, path.join(parent, "redirect"));
-    const safeRoot = path.join(parent, "redirect/root");
-    await expect(buildExtension({ safeRoot, outputRoot: path.join(safeRoot, "extension") })).rejects.toThrow(/symbolic link/i);
+    await symlink(target, path.join(osTemporaryRoot, "redirect"));
+    const safeRoot = path.join(osTemporaryRoot, "redirect/root");
+    await expect(runProgrammaticOutput(root, "buildExtension", {
+      safeRoot, outputRoot: path.join(safeRoot, "extension"),
+    }, osTemporaryRoot)).rejects.toThrow(/symbolic link/i);
     expect(await readdir(path.join(target, "root/extension"))).toEqual([]);
   });
 

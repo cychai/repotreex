@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { cp, mkdir, symlink } from "node:fs/promises";
+import { cp, mkdir, realpath, symlink } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -39,4 +39,32 @@ export function runReplacementWithOptions(
     pathToFileURL(path.join(root, "scripts/build.mjs")).href,
     JSON.stringify(options), entrypoint,
   ]);
+}
+
+// Both roots belong to the caller's dedicated fixture. The child process uses
+// only osTemporaryRoot as OS temp, regardless of checkout location or TMPDIR.
+export async function createTemporaryRootModel(parent: string) {
+  const canonicalParent = await realpath(parent);
+  const osTemporaryRoot = path.join(canonicalParent, "os-temp");
+  const outsideRoot = path.join(canonicalParent, "outside-temp");
+  await Promise.all([mkdir(osTemporaryRoot), mkdir(outsideRoot)]);
+  return { osTemporaryRoot, outsideRoot };
+}
+
+export function runProgrammaticOutput(
+  root: string,
+  entrypoint: "buildExtension" | "buildPackage",
+  options: { outputRoot: string; safeRoot?: string },
+  osTemporaryRoot: string,
+) {
+  const script = entrypoint === "buildExtension" ? "build.mjs" : "package.mjs";
+  return execFileAsync(process.execPath, [
+    "--input-type=module", "-e",
+    "const module = await import(process.argv[1]); await module[process.argv[2]](JSON.parse(process.argv[3]));",
+    pathToFileURL(path.join(root, "scripts", script)).href,
+    entrypoint, JSON.stringify(options),
+  ], {
+    env: { ...process.env, TMPDIR: osTemporaryRoot, TMP: osTemporaryRoot, TEMP: osTemporaryRoot },
+    timeout: 10_000,
+  });
 }
