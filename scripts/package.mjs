@@ -76,4 +76,10 @@ await Promise.all(
   ),
 );
 await rm(archivePath, { force: true });
-await run("zip", ["-X", "-q", archivePath, ...files], { cwd: extensionRoot });
+await run("zip", ["-X", "-q", archivePath, ...files], {
+  cwd: extensionRoot,
+  env: {
+    ...process.env,
+    TZ: "UTC",
+  },
+});
