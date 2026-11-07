@@ -16,6 +16,7 @@ const requiredPaths = [
   "assets/icon-48.png",
   "assets/icon-128.png",
   "content/index.ts",
+  "content/panel.ts",
   "page/bridge.ts",
 ];
 
@@ -40,13 +41,14 @@ await mkdir(outputRoot, { recursive: true });
 
 await build({
   absWorkingDir: projectRoot,
-  entryPoints: ["src/content/index.ts", "src/page/bridge.ts"],
+  entryPoints: ["src/content/index.ts", "src/content/panel.ts", "src/page/bridge.ts"],
   outdir: outputRoot,
   outbase: "src",
   bundle: true,
   format: "iife",
   platform: "browser",
   target: "chrome120",
+  loader: { ".css": "text" },
   sourcemap: false,
   logLevel: "info",
 });

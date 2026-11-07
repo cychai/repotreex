@@ -1,0 +1,78 @@
+:host {
+  all: initial;
+  --surface: #f7f8f8;
+  --raised: #ffffff;
+  --ink: #242b30;
+  --muted: #56626b;
+  --line: #d2d9dd;
+  --accent: #006a60;
+  --selected: #daede8;
+  --hover: #e8edee;
+  --danger: #a52929;
+  display: block;
+  position: fixed;
+  inset: var(--repotreex-top-offset, 0px) auto 0 0;
+  width: min(var(--repotreex-panel-width, 300px), 100vw);
+  z-index: 1000;
+  color: var(--ink);
+  color-scheme: light;
+  font: 12px/1.5 "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  text-align: left;
+  direction: ltr;
+}
+:host([data-theme="dark"]) {
+  --surface: #181e22;
+  --raised: #20282d;
+  --ink: #e4e9ec;
+  --muted: #acbac2;
+  --line: #42505a;
+  --accent: #71d8c4;
+  --selected: #25463f;
+  --hover: #2b353c;
+  --danger: #ff9e9e;
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled, input:disabled, select:disabled { cursor: default; opacity: .6; }
+button, select, input { border: 1px solid var(--line); border-radius: 3px; background: var(--raised); }
+button { min-height: 32px; padding: 4px 8px; }
+button:hover:not(:disabled), [role="treeitem"]:hover { background: var(--hover); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+svg { flex: none; vertical-align: middle; }
+.panel { height: 100%; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--line); }
+.header { padding: 12px 12px 10px; border-bottom: 1px solid var(--line); }
+.brand-row, .ref-row { display: flex; align-items: center; gap: 6px; }
+.brand { color: var(--accent); font-size: 14px; font-weight: 700; flex: 1; }
+.repository { display: block; font-weight: 600; font-size: 13px; margin: 4px 0 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.icon-button { display: inline-flex; align-items: center; justify-content: center; width: 32px; padding: 0; }
+.ref-row select { min-width: 0; flex: 1; height: 32px; padding: 4px 6px; }
+.body { min-height: 0; display: flex; flex-direction: column; flex: 1; padding-top: 10px; }
+.search-box { display: flex; align-items: center; gap: 7px; margin: 0 12px; }
+.search-box input { width: 100%; min-width: 0; padding: 6px 8px; height: 34px; }
+.full-search { margin: 8px 12px 0; text-align: left; }
+.status { color: var(--muted); padding: 8px 12px; white-space: pre-line; overflow-wrap: anywhere; }
+.status:empty { padding: 4px; }
+.error { color: var(--danger); padding: 8px 12px; overflow-wrap: anywhere; }
+.error button { display: block; margin-top: 6px; }
+.tree { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 4px 0 10px; list-style: none; overscroll-behavior: contain; }
+.item { display: flex; align-items: center; min-height: 32px; gap: 6px; padding: 4px 12px 4px calc(10px + (var(--level, 1) - 1) * 16px); cursor: pointer; }
+.item[aria-selected="true"] { background: var(--selected); box-shadow: inset 3px 0 var(--accent); }
+.item .label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+.item .chevron { width: 12px; height: 12px; transition: transform 100ms ease; }
+.item[aria-expanded="true"] .chevron { transform: rotate(90deg); }
+.item .spacer { width: 12px; flex: none; }
+.directory-status { font-size: 11px; color: var(--muted); margin-left: auto; }
+.directory-error { padding: 2px 12px 8px; color: var(--danger); overflow-wrap: anywhere; }
+.directory-error button { margin-left: 6px; }
+.reopen { position: absolute; left: 0; top: 12px; width: 32px; min-height: 104px; writing-mode: vertical-rl; letter-spacing: .03em; background: var(--surface); border-left: 0; border-radius: 0 4px 4px 0; }
+.resizer { position: absolute; top: 0; bottom: 0; right: -4px; width: 9px; cursor: ew-resize; touch-action: none; }
+.resizer:hover, .resizer:focus-visible { background: var(--accent); opacity: .65; }
+:host([data-resizing="true"]) .panel { user-select: none; }
+:host([data-open="false"]) { width: 32px; pointer-events: none; }
+.reopen { pointer-events: auto; }
+.backdrop { position: fixed; inset: var(--repotreex-top-offset, 0px) 0 0; background: rgb(0 0 0 / .35); border: 0; border-radius: 0; z-index: -1; }
+:host([data-overlay="true"]) .panel { box-shadow: 4px 0 16px rgb(0 0 0 / .2); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
