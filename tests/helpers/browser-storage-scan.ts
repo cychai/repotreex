@@ -1,168 +1,100 @@
 import ts from "typescript";
 
-type BrowserValue = "root" | "storage" | "area" | "method";
-type Scope = Map<string, BrowserValue | null>;
+const browserRoots = new Set(["chrome", "browser"]);
+const globalHolders = new Set(["globalThis", "window", "self"]);
 
-const storageAreas = new Set(["local", "sync", "session", "managed"]);
-const storageMethods = new Set(["get", "getBytesInUse", "set", "remove", "clear", "setAccessLevel"]);
+function isAmbientDeclaration(declaration: ts.Declaration): boolean {
+  let node: ts.Node | undefined = declaration;
+  while (node && !ts.isSourceFile(node)) {
+    if (ts.isVariableStatement(node)) {
+      return node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword) === true;
+    }
+    node = node.parent;
+  }
+  return false;
+}
+
+function isReferenceIdentifier(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
+  if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
+  if (ts.isShorthandPropertyAssignment(parent)) return true;
+  if ("name" in parent && parent.name === node) return false;
+  if (ts.isLabeledStatement(parent) || ts.isBreakStatement(parent) || ts.isContinueStatement(parent)) return false;
+  return true;
+}
+
+function isRuntimeIdentityReference(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  return ts.isTypeOfExpression(parent)
+    || (ts.isPropertyAccessExpression(parent) && parent.expression === node && parent.name.text === "runtime");
+}
 
 function unwrap(node: ts.Expression): ts.Expression {
-  if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isTypeAssertionExpression(node) || ts.isNonNullExpression(node)) {
-    return unwrap(node.expression);
+  while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)
+    || ts.isNonNullExpression(node) || ts.isSatisfiesExpression(node)) {
+    node = node.expression;
   }
   return node;
 }
 
-function memberType(base: BrowserValue, property: string | undefined): BrowserValue | undefined {
-  if (base === "root" && property === "storage") return "storage";
-  if (base === "storage" && storageAreas.has(property ?? "")) return "area";
-  if (base === "area" && storageMethods.has(property ?? "")) return "method";
-  return undefined;
-}
-
+// Architecture guard, deliberately NOT taint/dataflow analysis. An unshadowed
+// browser root is forbidden outside preferences.ts even when merely aliased or
+// passed to another function (except direct runtime/typeof identity checks).
+// Assignments/callbacks cannot erase that evidence.
+// The compiler binder owns lexical/var/loop/named-function shadowing; no type
+// evaluation, alias fixed point, or simulated execution is performed here.
 export function findBrowserStorageReferences(source: string, filename: string): number[] {
   const file = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const host: ts.CompilerHost = {
+    getSourceFile: (name) => name === filename ? file : undefined,
+    getDefaultLibFileName: () => "lib.d.ts",
+    writeFile: () => { throw new Error("Privacy scanner must not emit files"); },
+    getCurrentDirectory: () => "",
+    getDirectories: () => [],
+    fileExists: (name) => name === filename,
+    readFile: (name) => name === filename ? source : undefined,
+    getCanonicalFileName: (name) => name,
+    useCaseSensitiveFileNames: () => true,
+    getNewLine: () => "\n",
+  };
+  const checker = ts.createProgram([filename], { noLib: true, noResolve: true, allowJs: true }, host).getTypeChecker();
   const findings = new Set<number>();
-  const scopes: Scope[] = [new Map()];
-  const constants: Map<string, string>[] = [new Map()];
-  const ambientRoots = new Set<string>();
-
-  for (const statement of file.statements) {
-    if (!ts.isVariableStatement(statement) || (statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword) !== true)) continue;
-    for (const declaration of statement.declarationList.declarations) {
-      if (ts.isIdentifier(declaration.name) && (declaration.name.text === "chrome" || declaration.name.text === "browser")) {
-        ambientRoots.add(declaration.name.text);
-      }
-    }
-  }
-
-  const resolveIdentifier = (name: string): BrowserValue | undefined => {
-    for (let index = scopes.length - 1; index >= 0; index -= 1) {
-      if (scopes[index].has(name)) return scopes[index].get(name) ?? undefined;
-    }
-    return name === "chrome" || name === "browser" ? "root" : undefined;
-  };
-
-  const resolveConstant = (name: string): string | undefined => {
-    for (let index = constants.length - 1; index >= 0; index -= 1) {
-      if (constants[index].has(name)) return constants[index].get(name);
-      if (scopes[index].has(name)) return undefined;
-    }
-    return undefined;
-  };
-
-  const staticProperty = (node: ts.Expression): string | undefined => {
-    const value = unwrap(node);
-    if (ts.isStringLiteralLike(value)) return value.text;
-    if (ts.isIdentifier(value)) return resolveConstant(value.text);
-    return undefined;
-  };
-
-  const expressionType = (node: ts.Expression): BrowserValue | undefined => {
-    const value = unwrap(node);
-    if (ts.isIdentifier(value)) return resolveIdentifier(value.text);
-    if (ts.isPropertyAccessExpression(value)) {
-      const base = expressionType(value.expression);
-      return base === undefined ? undefined : memberType(base, value.name.text);
-    }
-    if (ts.isElementAccessExpression(value) && value.argumentExpression) {
-      const base = expressionType(value.expression);
-      return base === undefined ? undefined : memberType(base, staticProperty(value.argumentExpression));
-    }
-    return undefined;
-  };
-
-  const bindingProperty = (element: ts.BindingElement): string | undefined => {
-    const property = element.propertyName ?? element.name;
-    return ts.isIdentifier(property) || ts.isStringLiteralLike(property) ? property.text : undefined;
-  };
-
-  const bind = (name: ts.BindingName, value: BrowserValue | undefined, scope: Scope): void => {
-    if (ts.isIdentifier(name)) {
-      scope.set(name.text, value ?? null);
-      return;
-    }
-    for (const element of name.elements) {
-      if (ts.isOmittedExpression(element)) continue;
-      const nested = value === undefined ? undefined : memberType(value, bindingProperty(element));
-      bind(element.name, nested, scope);
-    }
-  };
-
-  const assign = (node: ts.Expression, value: BrowserValue | undefined): void => {
-    const target = unwrap(node);
-    if (ts.isIdentifier(target)) {
-      for (let index = scopes.length - 1; index >= 0; index -= 1) {
-        if (scopes[index].has(target.text)) {
-          scopes[index].set(target.text, value ?? null);
-          return;
-        }
-      }
-      scopes.at(-1)?.set(target.text, value ?? null);
-      return;
-    }
-    if (!ts.isObjectLiteralExpression(target)) return;
-    for (const property of target.properties) {
-      if (ts.isShorthandPropertyAssignment(property)) {
-        assign(property.name, value === undefined ? undefined : memberType(value, property.name.text));
-      } else if (ts.isPropertyAssignment(property)) {
-        const key = ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name) ? property.name.text : undefined;
-        assign(property.initializer, value === undefined ? undefined : memberType(value, key));
-      }
-    }
-  };
-
   const report = (node: ts.Node): void => {
     findings.add(file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1);
   };
-
-  const currentScope = (): Scope => scopes[scopes.length - 1];
-  const currentConstants = (): Map<string, string> => constants[constants.length - 1];
-
-  const visit = (node: ts.Node): void => {
-    if (ts.isFunctionLike(node)) {
-      scopes.push(new Map());
-      constants.push(new Map());
-      for (const parameter of node.parameters) bind(parameter.name, undefined, currentScope());
-      if ("body" in node && node.body) visit(node.body);
-      scopes.pop();
-      constants.pop();
-      return;
-    }
-    if (ts.isBlock(node)) {
-      scopes.push(new Map());
-      constants.push(new Map());
-      for (const statement of node.statements) visit(statement);
-      scopes.pop();
-      constants.pop();
-      return;
-    }
-    if (ts.isVariableDeclaration(node)) {
-      const value = node.initializer ? expressionType(node.initializer) : undefined;
-      if (!(ts.isIdentifier(node.name) && ambientRoots.has(node.name.text) && node.initializer === undefined)) {
-        bind(node.name, value, currentScope());
-      }
-      if (node.initializer && ts.isIdentifier(node.name) && ts.isStringLiteralLike(unwrap(node.initializer))) {
-        currentConstants().set(node.name.text, (unwrap(node.initializer) as ts.StringLiteralLike).text);
-      }
-      if (value === "storage" || value === "area" || value === "method") report(node);
-      if (node.initializer) visit(node.initializer);
-      return;
-    }
-    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-      const value = expressionType(node.right);
-      assign(node.left, value);
-      if (value === "storage" || value === "area" || value === "method") report(node);
-      visit(node.right);
-      return;
-    }
-    if (ts.isExpression(node)) {
-      const value = expressionType(node);
-      if (value === "storage" || value === "area" || value === "method") report(node);
-    }
-    ts.forEachChild(node, visit);
+  const isAmbient = (node: ts.Identifier): boolean => {
+    const symbol = ts.isShorthandPropertyAssignment(node.parent)
+      ? checker.getShorthandAssignmentValueSymbol(node.parent)
+      : checker.getSymbolAtLocation(node);
+    return !symbol || symbol.declarations?.every(isAmbientDeclaration) === true;
   };
-
-  for (const statement of file.statements) visit(statement);
+  const nodes: ts.Node[] = [file];
+  while (nodes.length > 0) {
+    const node = nodes.pop();
+    if (!node) break;
+    if (ts.isTypeNode(node) || ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) continue;
+    if (ts.isIdentifier(node) && browserRoots.has(node.text) && isReferenceIdentifier(node)
+      && !isRuntimeIdentityReference(node) && isAmbient(node)) {
+      report(node);
+    }
+    if (ts.isPropertyAccessExpression(node) && browserRoots.has(node.name.text)) {
+      let base = unwrap(node.expression);
+      while (ts.isPropertyAccessExpression(base) && globalHolders.has(base.name.text)) {
+        base = unwrap(base.expression);
+      }
+      if (ts.isIdentifier(base) && globalHolders.has(base.text) && isAmbient(base)) report(node);
+    }
+    const initializer = ts.isVariableDeclaration(node) ? node.initializer
+      : ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken ? node.right : undefined;
+    if (initializer) {
+      const value = unwrap(initializer);
+      if (ts.isIdentifier(value) && globalHolders.has(value.text) && isAmbient(value)) report(node);
+    }
+    // Exact root strings are conservative evidence too (constant/computed
+    // global lookups). Ordinary "chrome.storage" text and comments are not.
+    if (ts.isStringLiteralLike(node) && browserRoots.has(node.text)) report(node);
+    ts.forEachChild(node, (child) => { nodes.push(child); });
+  }
   return [...findings].sort((left, right) => left - right);
 }

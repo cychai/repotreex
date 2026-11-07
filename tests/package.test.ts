@@ -1,13 +1,15 @@
 // @vitest-environment node
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { buildPackage } from "../scripts/package.mjs";
 import packageMetadata from "../package.json";
+
+const projectRoot = path.resolve(import.meta.dirname, "..");
 
 const expectedArchiveEntries = [
   "assets/icon-128.png",
@@ -82,6 +84,53 @@ describe("extension package", () => {
       await expect(readFile(sentinel, "utf8")).resolves.toBe("keep");
     } finally {
       await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects a symlink ancestor even when its target stays in OS temporary storage", async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), "repotreex-package-safety-"));
+    try {
+      const target = path.join(parent, "target");
+      await mkdir(path.join(target, "output"), { recursive: true });
+      await symlink(target, path.join(parent, "linked"));
+      await expect(buildPackage({ outputRoot: path.join(parent, "linked/output") })).rejects.toThrow(/symbolic link/i);
+      expect(await readdir(path.join(target, "output"))).toEqual([]);
+    } finally {
+      await rm(parent, { force: true, recursive: true });
+    }
+  });
+
+  it("packages successfully through the canonical OS temporary path", async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), "repotreex-package-safety-"));
+    try {
+      const { files } = await buildPackage({ outputRoot: await realpath(parent) });
+      expect(files).toEqual(expectedArchiveEntries);
+    } finally {
+      await rm(parent, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects a real non-temporary output root before creating extension or archive", async () => {
+    const outputRoot = await mkdtemp(path.join(projectRoot, ".superpowers/package-safety-"));
+    try {
+      await expect(buildPackage({ outputRoot })).rejects.toThrow(/canonical OS temporary root/i);
+      expect(await readdir(outputRoot)).toEqual([]);
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects a temporary symlink ancestor redirected outside OS temporary storage", async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), "repotreex-package-safety-"));
+    const target = await mkdtemp(path.join(projectRoot, ".superpowers/package-safety-"));
+    try {
+      await mkdir(path.join(target, "output"));
+      await symlink(target, path.join(parent, "redirect"));
+      await expect(buildPackage({ outputRoot: path.join(parent, "redirect/output") })).rejects.toThrow(/symbolic link/i);
+      expect(await readdir(path.join(target, "output"))).toEqual([]);
+    } finally {
+      await rm(parent, { force: true, recursive: true });
+      await rm(target, { force: true, recursive: true });
     }
   });
 

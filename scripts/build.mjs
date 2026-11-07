@@ -1,9 +1,12 @@
-import { cp, lstat, mkdir, readdir, realpath, rename, rm, stat } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import { homedir, tmpdir } from "node:os";
+import { cp, lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import {
+  assertNoSymlinkComponents, assertRealDirectory, canonicalTemporaryRoot,
+  isStrictDescendant, missing, normalizeSystemPath, validateTemporaryDirectory,
+} from "./output-paths.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourceRoot = path.join(projectRoot, "src");
@@ -20,26 +23,16 @@ const requiredPaths = [
   "page/bridge.ts",
 ];
 
-function isStrictDescendant(candidate, parent) {
-  const relative = path.relative(parent, candidate);
-  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-}
-
 function isAllowedSafeRoot(safeRoot) {
-  const temporaryDirectory = path.resolve(tmpdir());
-  return safeRoot === defaultSafeRoot || isStrictDescendant(safeRoot, temporaryDirectory);
-}
-
-function missing(error) {
-  return error && typeof error === "object" && "code" in error && error.code === "ENOENT";
+  return safeRoot === defaultSafeRoot || isStrictDescendant(safeRoot, canonicalTemporaryRoot());
 }
 
 export function validateBuildOutput({ outputRoot, safeRoot }) {
   if (typeof outputRoot !== "string" || outputRoot.trim() === "" || typeof safeRoot !== "string" || safeRoot.trim() === "") {
     throw new TypeError("Build output and safe root must be non-empty paths");
   }
-  const resolvedOutput = path.resolve(outputRoot);
-  const resolvedSafeRoot = path.resolve(safeRoot);
+  const resolvedOutput = normalizeSystemPath(outputRoot);
+  const resolvedSafeRoot = normalizeSystemPath(safeRoot);
   const forbiddenOutputs = new Set([path.parse(resolvedOutput).root, path.resolve(homedir()), projectRoot]);
   if (!isAllowedSafeRoot(resolvedSafeRoot)) {
     throw new Error("Build safe root must be the project dist directory or a temporary child");
@@ -50,39 +43,15 @@ export function validateBuildOutput({ outputRoot, safeRoot }) {
   return { outputRoot: resolvedOutput, safeRoot: resolvedSafeRoot };
 }
 
-async function assertNoSymlinkComponents(target, { allowMissingLeaf = false, base } = {}) {
-  const resolved = path.resolve(target);
-  const start = base === undefined ? path.parse(resolved).root : path.resolve(base);
-  if (base !== undefined && resolved !== start && !isStrictDescendant(resolved, start)) {
-    throw new Error("Path is outside its validated base");
-  }
-  const relative = path.relative(start, resolved);
-  const components = relative === "" ? [] : relative.split(path.sep).filter(Boolean);
-  let current = start;
-  for (let index = 0; index < components.length; index += 1) {
-    current = path.join(current, components[index]);
-    try {
-      const info = await lstat(current);
-      if (info.isSymbolicLink()) throw new Error(`Symbolic link path component is not allowed: ${current}`);
-    } catch (error) {
-      if (missing(error) && allowMissingLeaf && index === components.length - 1) return;
-      throw error;
-    }
-  }
-}
-
-async function assertRealDirectory(directory, description) {
-  const info = await lstat(directory);
-  if (info.isSymbolicLink()) throw new Error(`${description} must not be a symbolic link`);
-  if (!info.isDirectory()) throw new Error(`${description} must be a directory`);
-}
-
 export async function preflightBuildInputs(root = sourceRoot) {
+  root = normalizeSystemPath(root);
+  await assertNoSymlinkComponents(root);
   await assertRealDirectory(root, "Build source root");
   await Promise.all(requiredPaths.map(async (relativePath) => {
     const requiredPath = path.join(root, relativePath);
     try {
-      await assertNoSymlinkComponents(requiredPath);
+      await assertNoSymlinkComponents(path.dirname(requiredPath));
+      if ((await lstat(requiredPath)).isSymbolicLink()) throw new Error("input is a symbolic link");
       const file = await stat(requiredPath);
       if (!file.isFile()) throw new Error("path is not a file");
     } catch (error) {
@@ -93,6 +62,8 @@ export async function preflightBuildInputs(root = sourceRoot) {
 
 async function validatePreparedOutput({ outputRoot, safeRoot }) {
   const validated = validateBuildOutput({ outputRoot, safeRoot });
+  await assertNoSymlinkComponents(validated.outputRoot);
+  if (validated.safeRoot !== defaultSafeRoot) await validateTemporaryDirectory(validated.safeRoot);
   await assertRealDirectory(validated.safeRoot, "Build safe root");
   await assertRealDirectory(validated.outputRoot, "Build output");
   const [canonicalSafeRoot, canonicalOutput] = await Promise.all([
@@ -112,7 +83,7 @@ export async function prepareBuildOutput({ outputRoot, safeRoot }) {
   const validated = validateBuildOutput({ outputRoot, safeRoot });
   await assertRealDirectory(validated.safeRoot, "Build safe root");
   try {
-    await assertNoSymlinkComponents(validated.outputRoot, { base: validated.safeRoot });
+    await assertNoSymlinkComponents(validated.outputRoot);
   } catch (error) {
     if (missing(error)) throw new Error("Build output must be a caller-created empty directory", { cause: error });
     throw error;
@@ -159,18 +130,11 @@ export async function buildExtension(options) {
   return validated;
 }
 
-export async function buildDefaultExtension({
-  sourceRoot: requestedSourceRoot = sourceRoot,
-  safeRoot = defaultSafeRoot,
-  outputRoot = defaultOutputRoot,
-} = {}) {
-  await preflightBuildInputs(requestedSourceRoot);
-  const validated = validateBuildOutput({ outputRoot, safeRoot });
-  if (validated.safeRoot === defaultSafeRoot) {
-    await assertNoSymlinkComponents(path.dirname(validated.safeRoot), { base: projectRoot });
-  } else {
-    await assertNoSymlinkComponents(path.dirname(validated.safeRoot));
-  }
+export async function buildDefaultExtension() {
+  if (arguments.length !== 0) throw new TypeError("Default replacement accepts no arguments; paths are hard-coded");
+  await preflightBuildInputs(sourceRoot);
+  const validated = validateBuildOutput({ outputRoot: defaultOutputRoot, safeRoot: defaultSafeRoot });
+  await assertNoSymlinkComponents(validated.safeRoot, { allowMissingLeaf: true });
   let safeRootExists = true;
   try {
     await assertRealDirectory(validated.safeRoot, "Build safe root");
@@ -181,7 +145,7 @@ export async function buildDefaultExtension({
   if (!safeRootExists) await mkdir(validated.safeRoot);
   await assertRealDirectory(validated.safeRoot, "Build safe root");
   try {
-    await assertNoSymlinkComponents(validated.outputRoot, { allowMissingLeaf: true, base: validated.safeRoot });
+    await assertNoSymlinkComponents(validated.outputRoot, { allowMissingLeaf: true });
   } catch (error) {
     if (!missing(error)) throw error;
   }
@@ -192,19 +156,23 @@ export async function buildDefaultExtension({
   if (path.resolve(canonicalSafeRoot) !== validated.safeRoot) {
     throw new Error("Build safe root changed during validation");
   }
-  const stagingRoot = path.join(validated.safeRoot, `.repotreex-build-${randomUUID()}`);
+  const stagingRoot = await mkdtemp(path.join(validated.safeRoot, ".repotreex-build-"));
   try {
-    await mkdir(stagingRoot);
-    await emitBuild(requestedSourceRoot, stagingRoot);
+    await emitBuild(sourceRoot, stagingRoot);
     try {
-      await assertNoSymlinkComponents(validated.outputRoot, { allowMissingLeaf: true, base: validated.safeRoot });
+      await assertNoSymlinkComponents(validated.outputRoot, { allowMissingLeaf: true });
     } catch (error) {
       if (!missing(error)) throw error;
     }
-    await rm(validated.outputRoot, { force: true, recursive: true });
+    // No caller path reaches this replacement: only this project's default.
+    await rm(defaultOutputRoot, { force: true, recursive: true });
     await rename(stagingRoot, validated.outputRoot);
   } catch (error) {
-    const stagingInfo = await lstat(stagingRoot).catch(() => undefined);
+    await assertNoSymlinkComponents(validated.safeRoot);
+    const stagingInfo = await lstat(stagingRoot).catch((error) => {
+      if (missing(error)) return undefined;
+      throw error;
+    });
     if (stagingInfo?.isDirectory() && !stagingInfo.isSymbolicLink()) {
       await rm(stagingRoot, { force: true, recursive: true });
     }
@@ -214,20 +182,10 @@ export async function buildDefaultExtension({
 }
 
 export async function buildDefaultProject() {
-  await preflightBuildInputs(sourceRoot);
-  const validated = validateBuildOutput({ outputRoot: defaultOutputRoot, safeRoot: defaultSafeRoot });
-  await assertNoSymlinkComponents(projectRoot);
-  let safeRootExists = true;
-  try {
-    await assertRealDirectory(validated.safeRoot, "Build safe root");
-  } catch (error) {
-    if (missing(error)) safeRootExists = false;
-    else throw error;
-  }
-  if (!safeRootExists) await mkdir(validated.safeRoot);
+  if (arguments.length !== 0) throw new TypeError("Default replacement accepts no arguments; paths are hard-coded");
   return buildDefaultExtension();
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && normalizeSystemPath(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await buildDefaultProject();
 }

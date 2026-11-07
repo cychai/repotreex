@@ -393,3 +393,105 @@ the project/default output root must not be concurrently modified during build.
 The AST scan is a bounded conservative architecture guard, not whole-program
 taint analysis against eval-generated or deliberately obfuscated access. Live
 browser/private-repository acceptance remains governed by `docs/manual-test.md`.
+
+## Fix round 4
+
+Takeover completed on top of `5942261` in the requested worktree, without
+subagents, push, dependency changes, production-source changes, live CNB
+access, extension installation, OAuth activation, or permission expansion.
+All six requested finding groups are addressed and validated below.
+
+### Replacement authority and canonical paths
+
+- `buildDefaultExtension()` and `buildDefaultProject()` now take no arguments
+  in both runtime and declarations. Passing options is rejected before any
+  preflight or mutation. Recursive replacement is private to the hard-coded
+  project `dist/extension`; caller-selected siblings or temporary paths cannot
+  reach it. Programmatic builds still require caller-created empty leaves.
+- Default-replacement tests copy the real source/build scripts into fresh OS
+  temporary projects and run their fixed defaults, rather than exporting
+  destructive source/output overrides for tests. Successful replacement,
+  sentinel sibling preservation, missing-input preflight, symlink-source/root
+  rejection, and failed-compilation staging cleanup all execute real builds.
+- Shared path validation normalizes only verified macOS `/var` and `/tmp`
+  system aliases. All other ancestors and components are checked with `lstat`,
+  and prepared temporary roots must remain inside the canonical OS temporary
+  root. Both normal `/var/...` and canonical `/private/var/...` paths build and
+  package successfully. Symlink ancestors are rejected whether they redirect
+  within temporary storage or outside it; real non-temporary roots are rejected
+  before output writes.
+- Programmatic packaging no longer recursively cleans caller-owned output on
+  errors, and only default packaging may remove the fixed archive. Partial
+  temporary output is left to its caller, consistent with non-destructive
+  programmatic builds. Preflight and staged default build-before-replacement
+  behavior are retained.
+
+### Conservative persistence architecture
+
+- Removed custom alias/constant/assignment execution-state tracking entirely.
+  The guard inspects every executable AST node once with an iterative stack,
+  and uses the existing TypeScript compiler binder for lexical identity.
+  No fixed-point dataflow, callback execution simulation, external imports,
+  type diagnostics, or file emission occurs.
+- Unshadowed `chrome`/`browser` references and exact root-name string literals
+  are evidence even for benign aliases outside `preferences.ts`. The narrow
+  exceptions are direct `typeof`/`.runtime` identity checks already required
+  by `content/index.ts`; no production behavior change was needed. Local
+  declarations/parameters/imports/classes/named functions/loops/catches are
+  distinguished from ambient roots, and property/type names are not references.
+  Direct aliases of ambient global holders are also conservative evidence;
+  nested `globalThis.window.browser` access cannot bypass the root check.
+- Regressions cover parameter/binding initializers, assignment targets,
+  constant-computed destructuring, assertions/non-null/satisfies wrappers,
+  optional access, shorthand capture, deferred callback/function reassignment,
+  var/function/loop/named-function scope, global holders, escaped identifiers,
+  and a 2,000-iteration alias-cycle fixture with one-second scan limits.
+- Exact default-adapter serialization remains behavior-tested: a synthetic
+  repo/query patch writes only `panelOpen` and `panelWidth`. Fresh bundles must
+  keep storage evidence solely in `content/index.js`, with exactly one direct
+  Chrome local-storage reference and one preferences key. Exact source/built
+  manifest records and the exact eight-runtime-file archive are preserved.
+
+### RED/GREEN and final validation
+
+The initial test-first run under Node 24.22.2 failed 25/81 cases, including
+18 scanner failures and canonical-path/symlink-ancestor failures. The initial
+P1 test was masked by the old canonical-temp rejection; it was corrected to
+use the old API's accepted project-dist sibling. An independent reproduction
+using the original `5942261` build script confirmed the unrelated nonempty
+sibling sentinel was recursively deleted, exclusively in a fresh temporary
+fixture. The revised API rejects that request and preserves the sentinel.
+Additional shorthand/wrapped-global cases first failed 2 tests before their
+AST reference handling was corrected; global-holder aliases/nesting likewise
+failed two targeted cases before the conservative capture rule was added.
+
+Final authoritative validation pinned Node **24.22.2**:
+
+```text
+Focused build/privacy/package: 3/3 files, 97/97 tests passed
+Full suite from absent project dist: 15/15 files, 804/804 tests passed
+Tests left project dist absent; original ignored dist was restored by rename
+Both TypeScript scopes: passed
+ESLint: passed
+npm run package: passed
+unzip -t / unzip -l / exact unzip -Z1 eight-entry assertion: passed
+Built/source full manifest equality and single storage/key counts: passed
+git diff --check: passed
+```
+
+The prior ignored build was preserved and restored, not deleted by the clean
+test simulation. Packaging then replaced only the intended project default.
+The configured normal commit hook is attempted first; only its known missing
+`script/pre_commit_checks.sh` failure permits the authorized `--no-verify`
+fallback. The commit hash and actual hook outcome are returned in the task
+response.
+
+### Remaining concerns
+
+The architecture guard deliberately rejects benign ambient browser aliases
+and exact root-name string literals outside the adapter. It is not a proof
+against eval/generated names or intentionally obfuscated globals. A hostile
+same-user process can still race filesystem checks; build roots must not be
+concurrently redirected. Failed programmatic builds/packages may leave partial
+output for callers to inspect and remove. Live QQ Browser/Chrome/private-CNB QA
+remains unrun and governed by the existing manual matrix.

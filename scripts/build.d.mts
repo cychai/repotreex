@@ -15,10 +15,6 @@ export function buildExtension(options: {
   safeRoot: string;
 }): Promise<{ outputRoot: string; safeRoot: string }>;
 
-export function buildDefaultExtension(options?: {
-  sourceRoot?: string;
-  outputRoot?: string;
-  safeRoot?: string;
-}): Promise<{ outputRoot: string; safeRoot: string }>;
+export function buildDefaultExtension(): Promise<{ outputRoot: string; safeRoot: string }>;
 
 export function buildDefaultProject(): Promise<{ outputRoot: string; safeRoot: string }>;

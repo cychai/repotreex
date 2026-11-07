@@ -118,6 +118,28 @@ describe("privacy boundary", () => {
     ["nested renamed declaration", "const { storage: { local: area } } = chrome; area.set({ ...payload });"],
     ["nested renamed assignment", "let area; ({ storage: { local: area } } = browser); area.set({ ...payload });"],
     ["alias cycle", "let a = chrome; let b = a; a = b; b = a; b.storage.local.set({ anything: true });"],
+    ["parameter initializer", "function save(area = chrome.storage.local) { area.set({}); }"],
+    ["destructured parameter initializer", "function save({ area = browser.storage.local } = {}) { area.set({}); }"],
+    ["assignment target", "chrome.storage.local = replacement;"],
+    ["compound assignment target", "browser.storage.local ||= replacement;"],
+    ["constant computed declaration", "const key = 'storage'; const { [key]: store } = chrome; store.local.set({});"],
+    ["constant computed assignment", "const key = 'storage'; let store; ({ [key]: store } = browser); store.local.set({});"],
+    ["satisfies wrapper", "const area = (chrome satisfies unknown).storage.local; area.set({});"],
+    ["optional access", "browser?.['storage']?.local?.set({});"],
+    ["deferred reassignment", "let api = chrome; const later = () => { api = {}; }; api.storage.local.set({});"],
+    ["deferred function reassignment", "let api = browser; function later() { api = {}; } api.storage.local.set({});"],
+    ["loop scope leak", "for (let chrome of []) {} chrome.storage.local.set({});"],
+    ["named function scope leak", "const fn = function chrome() {}; chrome.storage.local.set({});"],
+    ["global holder", "globalThis.chrome.storage.local.set({});"],
+    ["computed global holder", "const key = 'chrome'; window[key].storage.local.set({});"],
+    ["benign root alias", "const api = chrome; consume(api);"],
+    ["escaped root identifier", "const api = chro\\u006de; consume(api);"],
+    ["shorthand root capture", "consume({ chrome });"],
+    ["wrapped global holder", "(window as Window).chrome.storage.local.set({});"],
+    ["satisfies global holder", "(globalThis satisfies unknown)['chrome'].storage.local.set({});"],
+    ["ambient root declaration", "declare const chrome: unknown; const api = chrome;"],
+    ["global-holder alias", "const holder = window; holder.chrome.storage.local.set({});"],
+    ["nested global holder", "globalThis.window.browser.storage.local.set({});"],
   ])("detects %s browser-storage bypasses", { timeout: 1_000 }, (_label, source) => {
     expect(findBrowserStorageReferences(source, "mutation.ts")).not.toEqual([]);
   });
@@ -126,8 +148,34 @@ describe("privacy boundary", () => {
     ["parameter", "function save(chrome: { storage: unknown }) { chrome.storage; }"],
     ["block binding", "{ const browser = { storage: { local: fake } }; browser.storage.local.set({}); }"],
     ["nested parameter", "const run = (chrome: unknown) => (chrome as any).storage.local.set({});"],
+    ["hoisted var", "function run() { chrome.storage; if (true) { var chrome = fake; } }"],
+    ["hoisted function", "chrome.storage; function chrome() {}"],
+    ["named function expression", "const run = function chrome() { chrome.storage; };"],
+    ["loop binding", "for (let browser of list) browser.storage;"],
+    ["catch binding", "try {} catch (chrome) { chrome.storage; }"],
+    ["later lexical binding", "{ chrome.storage; const chrome = fake; }"],
+    ["computed local object property", "const value = { chrome: fake, browser() {} }; value.chrome;"],
+    ["type properties", "type Local = { chrome: unknown; browser: unknown };"],
+    ["comment and literal", "// chrome.storage\nconst text = 'browser.storage';"],
+    ["shadowed global holder", "function run(window: unknown) { window.chrome.storage; }"],
+    ["direct runtime identity", "typeof chrome !== 'undefined' && Boolean(chrome.runtime?.id);"],
+    ["shorthand local capture", "function run(chrome: unknown) { consume({ chrome }); }"],
+    ["import binding", "import { fake as browser } from 'fake'; browser.storage;"],
+    ["class binding", "class chrome { static storage = fake; } chrome.storage;"],
+    ["switch binding", "switch (value) { case 1: browser.storage; break; default: let browser; }"],
   ])("ignores shadowed %s identifiers", { timeout: 1_000 }, (_label, source) => {
     expect(findBrowserStorageReferences(source, "shadowed.ts")).toEqual([]);
+  });
+
+  it("does not let function-body var bindings shadow parameter initializers", () => {
+    expect(findBrowserStorageReferences(
+      "function run(value = chrome.storage) { var chrome = fake; }", "parameters.ts",
+    )).not.toEqual([]);
+  });
+
+  it("walks a large alias cycle without iterative dataflow", { timeout: 1_000 }, () => {
+    const source = "let a = chrome, b = a;" + "a = b; b = a;".repeat(2_000) + "b.storage.local.set({});";
+    expect(findBrowserStorageReferences(source, "bounded.ts")).not.toEqual([]);
   });
 
   it("serializes exactly panel open state and width through the real adapter", async () => {
@@ -167,6 +215,8 @@ describe("privacy boundary", () => {
       findBrowserStorageReferences(readFileSync(path.join(extensionRoot, file), "utf8"), file).length > 0,
     );
     expect(builtStorageUsers).toEqual(["content/index.js"]);
-    expect(readFileSync(path.join(extensionRoot, "content/index.js"), "utf8")).toContain("repotreex.preferences");
+    const contentBundle = readFileSync(path.join(extensionRoot, "content/index.js"), "utf8");
+    expect(contentBundle.match(/\bchrome\.storage\.local\b/g)).toHaveLength(1);
+    expect(contentBundle.match(/repotreex\.preferences/g)).toHaveLength(1);
   });
 });

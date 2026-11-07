@@ -1,14 +1,14 @@
 // @vitest-environment node
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  buildDefaultExtension,
   buildExtension,
   prepareBuildOutput,
   validateBuildOutput,
 } from "../scripts/build.mjs";
+import { createBuildFixture, runBuildCli, runDefaultBuild, runReplacementWithOptions } from "./helpers/build-fixture";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const temporaryRoots: string[] = [];
@@ -137,60 +137,133 @@ describe("build output safety", () => {
   });
 
   it("preflights missing inputs before replacing the last usable default build", async () => {
-    const parent = await temporaryRoot();
-    const safeRoot = path.join(parent, "dist");
-    const outputRoot = path.join(safeRoot, "extension");
-    const sourceRoot = path.join(parent, "missing-source");
+    const root = await createBuildFixture(await temporaryRoot());
+    const outputRoot = path.join(root, "dist/extension");
     const sentinel = path.join(outputRoot, "last-usable-build.txt");
     await mkdir(outputRoot, { recursive: true });
-    await mkdir(sourceRoot);
     await writeFile(sentinel, "keep", "utf8");
+    await rm(path.join(root, "src/assets/icon-16.png"));
 
-    await expect(buildDefaultExtension({ sourceRoot, safeRoot, outputRoot })).rejects.toThrow(/Required build input/);
+    await expect(runDefaultBuild(root)).rejects.toThrow(/Required build input/);
     await expect(readFile(sentinel, "utf8")).resolves.toBe("keep");
+    expect(await readdir(path.join(root, "dist"))).toEqual(["extension"]);
   });
 
   it("rejects a symlink default root before replacing its target build", async () => {
     const parent = await temporaryRoot();
+    const root = await createBuildFixture(parent);
     const target = path.join(parent, "target-dist");
-    const safeRoot = path.join(parent, "dist-link");
-    const outputRoot = path.join(safeRoot, "extension");
+    const safeRoot = path.join(root, "dist");
     const sentinel = path.join(target, "extension", "last-usable-build.txt");
     await mkdir(path.dirname(sentinel), { recursive: true });
     await writeFile(sentinel, "keep", "utf8");
     await symlink(target, safeRoot);
 
-    await expect(buildDefaultExtension({
-      sourceRoot: path.join(projectRoot, "src"),
-      safeRoot,
-      outputRoot,
-    })).rejects.toThrow(/symbolic link/i);
+    await expect(runDefaultBuild(root)).rejects.toThrow(/symbolic link/i);
     await expect(readFile(sentinel, "utf8")).resolves.toBe("keep");
   });
 
   it("rejects a symlink source input before replacing the last usable build", async () => {
     const parent = await temporaryRoot();
-    const safeRoot = path.join(parent, "dist");
-    const outputRoot = path.join(safeRoot, "extension");
-    const sourceRoot = path.join(parent, "source");
+    const root = await createBuildFixture(parent);
+    const outputRoot = path.join(root, "dist/extension");
     const targetManifest = path.join(parent, "target-manifest.json");
     const sentinel = path.join(outputRoot, "last-usable-build.txt");
     await mkdir(outputRoot, { recursive: true });
-    await mkdir(path.join(sourceRoot, "assets"), { recursive: true });
-    await mkdir(path.join(sourceRoot, "content"), { recursive: true });
-    await mkdir(path.join(sourceRoot, "page"), { recursive: true });
     await writeFile(sentinel, "keep", "utf8");
     await writeFile(targetManifest, "{}", "utf8");
-    await symlink(targetManifest, path.join(sourceRoot, "manifest.json"));
-    for (const relativePath of [
-      "assets/icon-16.png", "assets/icon-32.png", "assets/icon-48.png", "assets/icon-128.png",
-      "content/index.ts", "content/panel.ts", "page/bridge.ts",
-    ]) {
-      await writeFile(path.join(sourceRoot, relativePath), "export {};", "utf8");
-    }
+    await rm(path.join(root, "src/manifest.json"));
+    await symlink(targetManifest, path.join(root, "src/manifest.json"));
 
-    await expect(buildDefaultExtension({ sourceRoot, safeRoot, outputRoot })).rejects.toThrow(/Required build input/);
+    await expect(runDefaultBuild(root)).rejects.toThrow(/Required build input/);
     await expect(readFile(sentinel, "utf8")).resolves.toBe("keep");
+  });
+
+  it.each(["buildDefaultExtension", "buildDefaultProject"])("%s does not export caller-selected destructive replacement authority", async (entrypoint) => {
+    const parent = await temporaryRoot();
+    const root = await createBuildFixture(parent);
+    // Use the fixture's canonical hard-coded dist (accepted by the old API),
+    // then ask it to delete an unrelated sibling of extension.
+    const safeRoot = path.join(await realpath(root), "dist");
+    const outputRoot = path.join(safeRoot, "unrelated-output");
+    const sentinel = path.join(outputRoot, "keep-me.txt");
+    await mkdir(outputRoot, { recursive: true });
+    await writeFile(sentinel, "keep", "utf8");
+
+    await expect(runReplacementWithOptions(root, { safeRoot, outputRoot }, entrypoint)).rejects.toThrow(/argument|option|hard-coded/i);
+    await expect(readFile(sentinel, "utf8")).resolves.toBe("keep");
+    expect(await readdir(safeRoot)).toEqual(["unrelated-output"]);
+  });
+
+  it("replaces only the hard-coded default in a fresh normal OS temporary project", async () => {
+    const root = await createBuildFixture(await temporaryRoot());
+    const outputRoot = path.join(root, "dist/extension");
+    await mkdir(outputRoot, { recursive: true });
+    await writeFile(path.join(outputRoot, "old-build.txt"), "replace", "utf8");
+    await writeFile(path.join(root, "dist/keep-me.txt"), "keep", "utf8");
+
+    await runBuildCli(root);
+
+    await expect(access(path.join(outputRoot, "manifest.json"))).resolves.toBeUndefined();
+    await expect(access(path.join(outputRoot, "old-build.txt"))).rejects.toThrow();
+    await expect(readFile(path.join(root, "dist/keep-me.txt"), "utf8")).resolves.toBe("keep");
+    expect((await readdir(path.join(root, "dist"))).sort()).toEqual(["extension", "keep-me.txt"]);
+  });
+
+  it("preserves the previous default build and removes staging when compilation fails", async () => {
+    const root = await createBuildFixture(await temporaryRoot());
+    const outputRoot = path.join(root, "dist/extension");
+    await mkdir(outputRoot, { recursive: true });
+    await writeFile(path.join(outputRoot, "last-usable.txt"), "keep", "utf8");
+    await writeFile(path.join(root, "src/content/index.ts"), "export const broken = ;", "utf8");
+
+    await expect(runDefaultBuild(root)).rejects.toThrow(/Build failed/);
+    await expect(readFile(path.join(outputRoot, "last-usable.txt"), "utf8")).resolves.toBe("keep");
+    expect(await readdir(path.join(root, "dist"))).toEqual(["extension"]);
+  });
+
+  it.each(["inside", "outside"])("rejects symlink ancestors redirecting %s the selected temporary root", async (direction) => {
+    const parent = await temporaryRoot();
+    const targetParent = direction === "inside" ? parent : await temporaryRoot();
+    const target = path.join(targetParent, "target");
+    const linked = path.join(parent, "linked");
+    await mkdir(path.join(target, "root/extension"), { recursive: true });
+    await symlink(target, linked);
+    const safeRoot = path.join(linked, "root");
+
+    await expect(buildExtension({ outputRoot: path.join(safeRoot, "extension"), safeRoot })).rejects.toThrow(/symbolic link/i);
+    expect(await readdir(path.join(target, "root/extension"))).toEqual([]);
+  });
+
+  it("accepts both the normal and canonical OS temporary directory spellings", async () => {
+    const normalRoot = await temporaryRoot();
+    const canonicalRoot = await realpath(normalRoot);
+    await mkdir(path.join(normalRoot, "normal"));
+    await mkdir(path.join(canonicalRoot, "canonical"));
+    await buildExtension({ safeRoot: normalRoot, outputRoot: path.join(normalRoot, "normal") });
+    await buildExtension({ safeRoot: canonicalRoot, outputRoot: path.join(canonicalRoot, "canonical") });
+    await expect(access(path.join(normalRoot, "normal/manifest.json"))).resolves.toBeUndefined();
+    await expect(access(path.join(canonicalRoot, "canonical/manifest.json"))).resolves.toBeUndefined();
+  });
+
+  it("rejects canonical directories outside OS temporary storage before writing", async () => {
+    const safeRoot = await mkdtemp(path.join(projectRoot, ".superpowers/build-safety-"));
+    temporaryRoots.push(safeRoot);
+    const outputRoot = path.join(safeRoot, "extension");
+    await mkdir(outputRoot);
+    await expect(buildExtension({ safeRoot, outputRoot })).rejects.toThrow(/safe root/i);
+    expect(await readdir(outputRoot)).toEqual([]);
+  });
+
+  it("rejects a temporary symlink ancestor redirected outside OS temporary storage", async () => {
+    const parent = await temporaryRoot();
+    const target = await mkdtemp(path.join(projectRoot, ".superpowers/build-safety-"));
+    temporaryRoots.push(target);
+    await mkdir(path.join(target, "root/extension"), { recursive: true });
+    await symlink(target, path.join(parent, "redirect"));
+    const safeRoot = path.join(parent, "redirect/root");
+    await expect(buildExtension({ safeRoot, outputRoot: path.join(safeRoot, "extension") })).rejects.toThrow(/symbolic link/i);
+    expect(await readdir(path.join(target, "root/extension"))).toEqual([]);
   });
 
   it("never replaces a previously generated non-empty leaf", async () => {
