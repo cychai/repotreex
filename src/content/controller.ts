@@ -184,10 +184,11 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
           if (pending[key] === undefined) continue;
           savedPreferenceRevisions[key] = revisions[key];
           if (dirtyPreferenceRevisions[key] === revisions[key]) {
+            // Storage merges include other tabs' fields, not live-tab updates.
+            panelPreferences = { ...panelPreferences, [key]: saved[key] };
             Reflect.deleteProperty(dirtyPreferences, key); Reflect.deleteProperty(dirtyPreferenceRevisions, key);
           }
         }
-        panelPreferences = { ...saved, ...dirtyPreferences };
         if (dirtyPreferences.panelOpen === undefined && dirtyPreferences.panelWidth === undefined) preferenceNotice = null;
         render();
       } catch {

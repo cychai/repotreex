@@ -508,6 +508,34 @@ describe("route controller integration", () => {
     await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(2));
     expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 460 } });
   });
+  it("width-only save preserves this tab's untouched open setting across unsupported-route remount", async () => {
+    const t = setup(); await t.navigateTo(url()); await flush();
+    await createPreferenceStore(t.storage).save({ panelOpen: false });
+    t.panel.root.querySelector<HTMLElement>('.resizer')?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(2)); await flush();
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 316 } });
+    expect(t.panel.host.dataset.open).toBe("true");
+    await t.navigateTo(url("profile/me"));
+    expect(document.getElementById("repotreex-root")).toBeNull();
+    await t.navigateTo(url()); await flush();
+    expect(t.panel.host.dataset.open).toBe("true");
+    expect(t.panel.host.style.getPropertyValue("--repotreex-panel-width")).toBe("316px");
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 316 } });
+  });
+  it("open-only save preserves this tab's untouched width across unsupported-route remount", async () => {
+    const t = setup(); await t.navigateTo(url()); await flush();
+    await createPreferenceStore(t.storage).save({ panelWidth: 460 });
+    t.panel.root.querySelector<HTMLButtonElement>('[aria-label="Collapse repository tree"]')?.click();
+    await vi.waitFor(() => expect(t.storage.set).toHaveBeenCalledTimes(2)); await flush();
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 460 } });
+    expect(t.panel.host.style.getPropertyValue("--repotreex-panel-width")).toBe("300px");
+    await t.navigateTo(url("profile/me"));
+    expect(document.getElementById("repotreex-root")).toBeNull();
+    await t.navigateTo(url()); await flush();
+    expect(t.panel.host.dataset.open).toBe("false");
+    expect(t.panel.host.style.getPropertyValue("--repotreex-panel-width")).toBe("300px");
+    expect(await t.storage.get()).toEqual({ "repotreex.preferences": { panelOpen: false, panelWidth: 460 } });
+  });
   it("successfully persisted local fields stop being dirty before later cross-tab saves", async () => {
     const t = setup(); await t.navigateTo(url()); await flush();
     t.panel.root.querySelector<HTMLButtonElement>('[aria-label="Collapse repository tree"]')?.click();

@@ -138,6 +138,32 @@ try {
   await wait(`syntheticWrites.length === ${writesBeforeExternal + 1}`);
   assert.deepEqual(await evaluate("syntheticStored"), { "repotreex.preferences": { panelOpen: false, panelWidth: 332 } });
   assert.equal(await evaluate("document.getElementById('repotreex-root').dataset.open"), "true");
+  // Storage merges are not live-tab updates: same-lifetime remounts retain
+  // untouched local settings in both directions, without rewriting storage.
+  const channelsBeforeRemount = await evaluate("new Set(syntheticChannels).size");
+  await page.evaluate(() => history.pushState({}, "", "/profile/me"));
+  await wait("document.getElementById('repotreex-root') === null");
+  await page.evaluate(() => history.pushState({}, "", "/acme/platform/repo/-/blob/release/v1/patch/b.ts"));
+  await wait(`${root}.querySelector('[aria-selected="true"]')?.dataset.path === 'b.ts'`);
+  assert.equal(await evaluate("document.getElementById('repotreex-root').dataset.open"), "true");
+  assert.equal(await evaluate("document.getElementById('repotreex-root').style.getPropertyValue('--repotreex-panel-width')"), "332px");
+  assert.deepEqual(await evaluate("syntheticStored"), { "repotreex.preferences": { panelOpen: false, panelWidth: 332 } });
+  const writesBeforeOpenOnly = await evaluate("syntheticWrites.length");
+  await evaluate(`syntheticStored['repotreex.preferences'].panelWidth=460;
+    ${root}.querySelector('[aria-label="Collapse repository tree"]').click()`);
+  await wait(`syntheticWrites.length === ${writesBeforeOpenOnly + 1}`);
+  assert.deepEqual(await evaluate("syntheticStored"), { "repotreex.preferences": { panelOpen: false, panelWidth: 460 } });
+  await page.evaluate(() => history.pushState({}, "", "/profile/me"));
+  await wait("document.getElementById('repotreex-root') === null");
+  await page.evaluate(() => history.pushState({}, "", "/acme/platform/repo/-/blob/release/v1/patch/b.ts"));
+  await wait(`${root}.querySelector('[aria-selected="true"]')?.dataset.path === 'b.ts'`);
+  assert.equal(await evaluate("document.getElementById('repotreex-root').dataset.open"), "false");
+  assert.equal(await evaluate("document.getElementById('repotreex-root').style.getPropertyValue('--repotreex-panel-width')"), "332px");
+  assert.deepEqual(await evaluate("syntheticStored"), { "repotreex.preferences": { panelOpen: false, panelWidth: 460 } });
+  assert.equal(await evaluate("syntheticWrites.length"), writesBeforeOpenOnly + 1);
+  assert.equal(await evaluate("new Set(syntheticChannels).size"), channelsBeforeRemount);
+  await evaluate(`${root}.querySelector('[aria-label="Open repository tree"]').click()`);
+  await wait("syntheticStored['repotreex.preferences'].panelOpen === true");
   // Detached same-session traversal still owns the throttle, not selection.
   mode = "delay"; await evaluate(`${root}.querySelector('[aria-label="Load full tree for search"]').click()`);
   await wait(`${root}.querySelector('[data-path="docs"]').getAttribute('aria-busy') === 'true'`);
@@ -271,5 +297,5 @@ try {
   assert.equal(await evaluate("Object.hasOwn(window, Symbol.for('repotreex.instance'))"), false);
   assert.deepEqual(errors, []);
   assert.equal(expectedHttpDiagnostics.length, 6);
-  console.log("PASS built entry in Chromium MAIN/isolated worlds: nested/slash refs, sequential ancestors, SPA cache, search, dirty-only cross-tab preference recovery, matching retry/reveal, collapse-only preservation, search error ownership, late same-session 429 gating, BFCache persisted-event scrub/fresh-channel resume, refresh, traversal rate/retry/cancel, stale lifetime data, canonical ref fallback, auth clearing, reinjection and invalidation; synthetic traffic only, no application console errors (expected injected 401/429/503 browser diagnostics).");
+  console.log("PASS built entry in Chromium MAIN/isolated worlds: nested/slash refs, sequential ancestors, SPA cache, search, dirty-only cross-tab preference recovery with live-tab open/width remount isolation, matching retry/reveal, collapse-only preservation, search error ownership, late same-session 429 gating, BFCache persisted-event scrub/fresh-channel resume, refresh, traversal rate/retry/cancel, stale lifetime data, canonical ref fallback, auth clearing, reinjection and invalidation; synthetic traffic only, no application console errors (expected injected 401/429/503 browser diagnostics).");
 } finally { await cdp.detach(); await page.close(); await browser.close(); }

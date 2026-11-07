@@ -471,3 +471,110 @@ After direct validation, the normal `git commit -F` failed only with
 `bash: script/pre_commit_checks.sh: No such file or directory`. The authorized
 `git commit --no-verify -F` retry uses the same reviewed four-file scope/message.
 No hook/config modifications or push.
+
+## Fix round 3
+
+Fixed the Important live/remount preference regression from `989f866` on
+`feature/repotreex-cnb-tree`. All edits and generated artifacts stay in the
+requested worktree; no subagents, push, permissions changes, metadata logging
+or metadata storage.
+
+### Root cause, changed files and regressions
+
+- `src/content/controller.ts`: `PreferenceStore.save` returns the full merged
+  storage state, including untouched settings written by another tab. Adopting
+  that whole object polluted this controller's remount preferences even though
+  the currently mounted panel retained its own settings. Reconcile a returned
+  value only for a field included in the successful dirty patch whose local
+  revision still matches. Preserve all untouched live-tab fields and newer
+  local intentions; retain dirty-only patch merging, cumulative failure
+  recovery, revision retirement, fixed notices and queued-work teardown.
+- `tests/controller.test.ts`: two new integration regressions use real panel
+  controls, controller, tree store and PreferenceStore with synthetic I/O. A
+  second PreferenceStore completes an external open/width write. The tests
+  verify storage keeps that external untouched setting, then navigate through
+  an unsupported route and back: width-only saves must keep this tab open and
+  retain its new width; open-only saves must retain this tab's original width
+  and its new closed state. Remount must not rewrite shared storage.
+- `scripts/check-content-browser.mjs`: extend the built isolated-world content
+  and MAIN-world bridge probe with both cross-tab save/remount directions,
+  unchanged stored values and single-lifetime channel ownership. Retain all
+  earlier cumulative recovery, BFCache, rate/auth, collapse, reveal, ref,
+  teardown and reinjection checks.
+- This report appends round 3 evidence; earlier rounds remain intact.
+
+No bootstrap, panel, PreferenceStore, route, provider, search, tree-store,
+protocol, manifest or build/package contract changes. Same-controller SPA
+unmount/remount keeps live-tab preferences; a genuinely fresh content lifetime
+still loads shared storage through the existing bootstrap contract.
+
+### TDD and direct validation
+
+Before production edits, the new focused controller/bootstrap/panel regressions
+produced **2 failed, 146 passed**. Width-only remount incorrectly returned closed
+instead of open; open-only remount incorrectly adopted external `460px` instead
+of this tab's `300px`. The updated Chromium probe also failed against the
+previous built entry at the open-state remount assertion (`false` versus `true`).
+After the narrow reconciliation fix, all checks below passed.
+
+Exact commands from the target worktree:
+
+```sh
+export PATH=/Users/bytedance/.npm/_npx/387698761821791d/node_modules/node/bin:$PATH
+node --version
+npm test -- tests/controller.test.ts tests/bootstrap.test.ts tests/panel.test.ts
+npm run typecheck
+npm run lint
+npm test
+npm run build && npm run package && unzip -t dist/repotreex-0.1.0.zip
+export PLAYWRIGHT_MODULE_PATH=/Users/bytedance/.npm/_npx/fd3bca3c548369c0/node_modules/playwright/index.mjs
+export CHROMIUM_EXECUTABLE_PATH=/Users/bytedance/Library/Caches/ms-playwright/chromium_headless_shell-1254/chrome-headless-shell-mac-arm64/chrome-headless-shell
+node scripts/check-content-browser.mjs
+node scripts/check-panel-browser.mjs
+git diff --check
+shasum -a 256 dist/extension/content/index.js dist/repotreex-0.1.0.zip
+```
+
+- Node **v24.22.2**; focused **148/148** (72 controller, 16 bootstrap, 60 panel).
+- Full **709/709 in 13 files**, including UTC/Shanghai byte-identical packaging.
+- Both TypeScript scopes, ESLint and diff whitespace checks passed.
+- Production build passed with the actual content entry (90.4 kb); package
+  passed, and all eight ZIP entries passed integrity checks.
+- Built Chromium content/MAIN-bridge probe and all four panel browser checks
+  passed. Synthetic intercepted traffic only; no application console errors
+  or warnings, exactly six expected injected HTTP resource diagnostics.
+- Content SHA-256:
+  `702db4f3038abf86a02cb9e5d68c56415f77968f05e15b7157207553ec135564`.
+- ZIP SHA-256:
+  `e07364b8b0cc607342beecfc90ef6e75fa9467d670a903b6c266aab349331339`.
+
+### Self-review and boundaries
+
+Reviewed the complete production/test/browser diff and unchanged manifest.
+Successful save reconciliation is inside both the included-dirty-field and
+matching-revision guards; it cannot import untouched external values or replace
+newer local intentions. Existing failed, cumulative, queued and same-valued
+intent regressions pass, as do queued-save destruction and fixed-notice privacy
+checks. The new tests independently verify stored values and remounted UI rather
+than relying on private controller state. The requested fix and validations are
+complete.
+
+Shared PreferenceStore writes remain non-transactional read/merge/write, so
+simultaneous interleaved cross-tab writes are not atomic. Real installed-extension
+and live authenticated CNB acceptance remain untested. BFCache checks exercise
+synthetic persisted events, not actual cache admission. Already-issued storage
+and MAIN-world fetch operations retain their existing non-abortable boundaries;
+queued writes and stale isolated-world results are still dropped on teardown.
+
+After direct validation, the normal commit command exited 1 with exactly
+`bash: script/pre_commit_checks.sh: No such file or directory`. The authorized
+fallback uses the same reviewed four-file scope and message; no hook/config
+changes or push:
+
+```sh
+git add src/content/controller.ts tests/controller.test.ts scripts/check-content-browser.mjs
+git add -u -- .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-10-report.md
+git diff --cached --check
+git commit -F .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-10-fix-round-3-commit-message.txt
+git commit --no-verify -F .superpowers/sdd/2026-11-07-repotreex-cnb-tree/task-10-fix-round-3-commit-message.txt
+```
