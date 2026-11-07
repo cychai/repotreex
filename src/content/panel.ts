@@ -14,6 +14,7 @@ export interface PanelOptions {
   onSearch(query: string): void;
   onLoadFullTree(): void;
   onCancelFullTree?(): void;
+  onRetryFullTree?(): void;
   onSelectRef(ref: string): void;
   onRetryDirectory?(path: string): void;
   onPreferenceChange(patch: Partial<Preferences>): void;
@@ -25,6 +26,8 @@ export interface PanelState {
   query?: string;
   loading?: boolean;
   error?: TreeDirectoryError | null;
+  notices?: readonly ("path-not-found" | "head-fallback" | "preferences-load-failed" | "preferences-save-failed")[];
+  fullTreeDisabled?: boolean;
   fullTree?: Readonly<{
     loading: boolean;
     progress?: TraversalProgress;
@@ -269,7 +272,7 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
     refIcon.replaceChildren(createPanelIcon(document, selectedRef?.kind ?? "branch").firstChild ?? document.createTextNode(""));
     ref.disabled = !activeSession; refresh.disabled = !activeSession || Boolean(state.loading);
     search.disabled = !activeSession;
-    fullSearch.disabled = !activeSession || Boolean(state.fullTree?.loading && !callbacks?.onCancelFullTree);
+    fullSearch.disabled = !activeSession || Boolean(state.fullTreeDisabled || state.fullTree?.loading && !callbacks?.onCancelFullTree);
     const fullLoading = state.fullTree?.loading;
     fullSearch.setAttribute("aria-label", fullLoading ? "Cancel full-tree search" : "Load full tree for search");
     fullSearch.textContent = fullLoading ? "Cancel full-tree search" : "Load full tree for search";
@@ -286,6 +289,13 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
     if (state.fullTree?.result?.truncated) status.textContent += "\nSearch is incomplete: the full-tree limit was reached.";
     if (state.fullTree?.result?.cancelled) status.textContent += "\nFull-tree search cancelled; only loaded paths are searched.";
     if (loadedMatches?.hasMoreMatches) status.textContent += "\nMore matches exist. Showing the first 200; narrow your search.";
+    const notices = {
+      "path-not-found": "The current path is not available on this ref. Showing the ref root.",
+      "head-fallback": "Default ref unavailable. Using HEAD.",
+      "preferences-load-failed": "Panel preferences could not be loaded. Using defaults for this tab.",
+      "preferences-save-failed": "Panel preferences were not saved. Changes apply only to this tab.",
+    };
+    for (const notice of state.notices ?? []) status.textContent += `\n${notices[notice]}`;
     scrub(error); error.hidden = !failure && !state.fullTree?.error;
     const shownError = failure ?? state.fullTree?.error;
     if (shownError && shownError.code !== "cancelled") {
@@ -363,7 +373,11 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
     if (!(target instanceof window.Element)) return;
     const action = target.closest<HTMLElement>("[data-action]");
     if (action?.dataset.action === "retry-root") { callbacks?.onRefresh(); return; }
-    if (action?.dataset.action === "retry-full") { callbacks?.onLoadFullTree(); return; }
+    if (action?.dataset.action === "retry-full") {
+      if (callbacks?.onRetryFullTree) callbacks.onRetryFullTree();
+      else callbacks?.onLoadFullTree();
+      return;
+    }
     if (action?.dataset.action === "retry-directory" && action.dataset.path !== undefined) {
       if (callbacks?.onRetryDirectory) callbacks.onRetryDirectory(action.dataset.path);
       else callbacks?.onToggleDirectory(action.dataset.path);
@@ -482,6 +496,7 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
       queued = inactive ? {
         ...emptyState(),
         error: next.error ? { code: next.error.code } : null,
+        notices: next.notices,
       } : next;
       schedule();
     },
