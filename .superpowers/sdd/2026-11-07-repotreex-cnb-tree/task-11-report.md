@@ -209,3 +209,98 @@ against deliberately obfuscated code or unknown telemetry vendors. The stricter
 single-adapter invariant makes persistence review tractable, while behavioral
 tests prove the current serializer output. Live browser/private-repository QA
 remains governed by the manual matrix and was not performed in this round.
+
+## Fix round 2
+
+Resolved the three remaining review gaps on top of `2224f7c`, in the requested
+worktree without subagents, permission expansion, live CNB access, OAuth
+activation, store publication, or push.
+
+### Safe build-output contract
+
+- Removed the arbitrary `REPOTREEX_OUTPUT_DIR` environment override. The CLI
+  default remains `dist/extension`; programmatic callers now use exported
+  `validateBuildOutput`, `prepareBuildOutput`, and `buildExtension` APIs with an
+  explicit safe root and strict descendant output leaf.
+- Validation occurs before filesystem mutation and rejects `/`, home, `.`, the
+  repository root, the safe root itself, ancestors/outside paths, the broad OS
+  temp root, files, and symbolic links. Safe roots are limited to project
+  `dist` or a child of the OS temp directory.
+- The exported API accepts only an empty dedicated leaf and never deletes it.
+  Existing non-empty directories are rejected, including previously generated
+  leaves, and sentinel tests verify their contents survive. Only the unchanged
+  CLI default may replace the hard-coded project `dist/extension` path.
+- `scripts/package.mjs` calls the build API directly. Tests build in independent
+  temporary leaves, avoiding stale ignored `dist/` and cross-test races.
+
+### Storage and artifact invariants
+
+- The persistence architecture guard now parses every production TypeScript
+  file with the TypeScript compiler AST. It follows `chrome`/`browser` aliases,
+  computed `['storage']`, assignments, storage and storage-area destructuring,
+  area aliases, and calls through those references. Only
+  `src/content/preferences.ts` may contain such references.
+- Mutation cases prove computed, root-alias, destructured-storage,
+  destructured-area, area-alias, spread-payload, destructured-method,
+  method-alias, and assignment-alias forms are detected. The real adapter test
+  still proves an attempted synthetic repo/query patch writes exactly
+  `panelOpen` and `panelWidth`.
+- Source and freshly built output scans cover cookie/credential APIs,
+  alternate storage, analytics/beacon/known telemetry, console logging, and
+  credential-shaped literals. Source and built manifests are asserted as the
+  exact implemented two-record configuration: one isolated content script and
+  one required MAIN-world bridge, each with the single nonempty
+  `https://cnb.cool/*` match, exact `storage` permission, and exact host scope.
+- Packaging tests inspect the ZIP itself with `unzip -Z1` and require exactly
+  eight runtime entries, automatically excluding tests, source maps, logs,
+  docs, and fixtures.
+
+### RED/GREEN evidence
+
+The first round-2 focused run under Node 24.22.2 failed as intended before the
+implementation existed: `tests/privacy.test.ts` could not import the AST scan
+helper, and `tests/build.test.ts` could not import the new build API. This was
+the RED signal for both the bypass detector and safe-output contract. An
+intermediate run also exposed the jsdom/esbuild `TextEncoder` realm mismatch;
+marking build/package/privacy suites as Node-environment tests fixed the test
+isolation rather than weakening assertions.
+
+Final focused GREEN:
+
+```text
+$ npx --yes -p node@24 -c 'node --version && npm test -- tests/build.test.ts tests/privacy.test.ts tests/package.test.ts && npm run typecheck && npm run lint'
+v24.22.2
+Test Files 3 passed (3)
+Tests 29 passed (29)
+TypeScript and ESLint exited 0
+```
+
+### Clean-dist final validation
+
+The final simulation moved the ignored project `dist/` outside the checkout,
+ran tests before packaging, asserted `test ! -e dist`, then packaged and
+inspected the regenerated archive:
+
+```sh
+npx --yes -p node@24 -c 'node --version && npm test'
+test ! -e dist
+npx --yes -p node@24 -c 'npm run typecheck && npm run lint && npm run package'
+unzip -t dist/repotreex-0.1.0.zip
+unzip -Z1 dist/repotreex-0.1.0.zip
+git diff --check
+```
+
+Results: Node 24.22.2; 15/15 test files and 736/736 tests passed in the final
+clean-dist run; tests left project `dist/` absent; both TypeScript scopes and
+ESLint passed; package/build exited 0; `unzip -t` reported no errors; ZIP entries
+were exactly four icons, `manifest.json`, `content/index.js`,
+`content/panel.js`, and `page/bridge.js`; diff whitespace passed.
+
+### Remaining concerns
+
+The AST scan is intentionally a focused architecture guard, not whole-program
+taint analysis: deliberately obfuscated global lookup or eval-generated code
+would still require review. The build contract relies on path validation plus
+an empty-leaf precondition; exported callers cannot delete an existing output
+tree. Live browser/private-repository acceptance remains unrun and continues to
+be governed by `docs/manual-test.md`.

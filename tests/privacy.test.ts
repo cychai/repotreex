@@ -1,14 +1,14 @@
-import { execFile } from "node:child_process";
+// @vitest-environment node
 import { globSync, readFileSync, statSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { buildExtension } from "../scripts/build.mjs";
 import manifest from "../src/manifest.json";
+import { findBrowserStorageReferences } from "./helpers/browser-storage-scan";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const execFileAsync = promisify(execFile);
 const sourceFiles = globSync("src/**/*.{ts,json}", { cwd: projectRoot }).sort();
 const productionTypeScriptFiles = sourceFiles.filter((file) => file.endsWith(".ts"));
 const productionSource = sourceFiles
@@ -35,6 +35,19 @@ const expectedBuiltFiles = [
   "manifest.json",
   "page/bridge.js",
 ];
+const expectedContentScripts = [
+  {
+    matches: ["https://cnb.cool/*"],
+    js: ["content/index.js"],
+    run_at: "document_start",
+  },
+  {
+    matches: ["https://cnb.cool/*"],
+    js: ["page/bridge.js"],
+    run_at: "document_start",
+    world: "MAIN",
+  },
+];
 const forbiddenRuntimeApis = [
   /\b(?:chrome|browser)\.cookies\b|\bdocument\.cookie\b/,
   /\b(?:localStorage|sessionStorage|indexedDB)\b/,
@@ -50,10 +63,8 @@ let buildOutput = "";
 beforeAll(async () => {
   temporaryRoot = await mkdtemp(path.join(tmpdir(), "repotreex-privacy-"));
   extensionRoot = path.join(temporaryRoot, "extension");
-  await execFileAsync(process.execPath, [path.join(projectRoot, "scripts/build.mjs")], {
-    cwd: projectRoot,
-    env: { ...process.env, REPOTREEX_OUTPUT_DIR: extensionRoot },
-  });
+  await mkdir(extensionRoot);
+  await buildExtension({ outputRoot: extensionRoot, safeRoot: temporaryRoot });
   const files = globSync("**/*.{js,json}", { cwd: extensionRoot }).sort();
   buildOutput = (await Promise.all(files.map((file) => readFile(path.join(extensionRoot, file), "utf8")))).join("\n");
 });
@@ -72,9 +83,7 @@ describe("privacy boundary", () => {
   it("keeps the manifest on the exact least-privilege permission set", () => {
     expect(manifest.permissions).toEqual(["storage"]);
     expect(manifest.host_permissions).toEqual(["https://cnb.cool/*"]);
-    expect(manifest.content_scripts.every((script) =>
-      script.matches.length === 1 && script.matches[0] === "https://cnb.cool/*",
-    )).toBe(true);
+    expect(manifest.content_scripts).toEqual(expectedContentScripts);
     expect(manifest.permissions.some((permission) => forbiddenPermissions.includes(permission))).toBe(false);
   });
 
@@ -83,11 +92,29 @@ describe("privacy boundary", () => {
   });
 
   it("allows persistent writes only through the preference adapter", () => {
-    const directBrowserStorageUsers = productionTypeScriptFiles.filter((file) =>
-      /\bchrome\.storage\b|\bbrowser\.storage\b/.test(readFileSync(path.join(projectRoot, file), "utf8")),
+    const browserStorageUsers = productionTypeScriptFiles.filter((file) =>
+      findBrowserStorageReferences(
+        readFileSync(path.join(projectRoot, file), "utf8"),
+        file,
+      ).length > 0,
     );
-    expect(directBrowserStorageUsers).toEqual([preferenceAdapter]);
+    expect(browserStorageUsers).toEqual([preferenceAdapter]);
     expect(productionSource).not.toMatch(/chrome\.storage\.(?:sync|session|managed)\b/);
+  });
+
+  it.each([
+    ["computed", 'chrome["storage"].local.set({ anything: true });'],
+    ["root alias", "const api = chrome; api.storage.local.set({ anything: true });"],
+    ["storage destructuring", "const { storage } = browser; storage.local.set({ anything: true });"],
+    ["area destructuring", "const { local } = chrome.storage; local.set({ anything: true });"],
+    ["area alias", "const area = chrome.storage.local; area.set({ anything: true });"],
+    ["spread payload", "const area = browser.storage.local; const payload = { ...input }; area.set(payload);"],
+    ["destructured method", "const { set } = chrome.storage.local; set({ anything: true });"],
+    ["method alias", "const write = browser.storage.local.set; write({ anything: true });"],
+    ["assignment alias", "let api; api = browser; api['storage'].local.set({ anything: true });"],
+    ["destructuring assignment", "let storage; ({ storage } = chrome); storage.local.set({ anything: true });"],
+  ])("detects %s browser-storage bypasses", (_label, source) => {
+    expect(findBrowserStorageReferences(source, "mutation.ts")).not.toEqual([]);
   });
 
   it("serializes exactly panel open state and width through the real adapter", async () => {
@@ -121,6 +148,6 @@ describe("privacy boundary", () => {
     const builtManifest = JSON.parse(readFileSync(path.join(extensionRoot, "manifest.json"), "utf8")) as typeof manifest;
     expect(builtManifest.permissions).toEqual(["storage"]);
     expect(builtManifest.host_permissions).toEqual(["https://cnb.cool/*"]);
-    expect(builtManifest.content_scripts.every((script) => script.matches.every((match) => match === "https://cnb.cool/*"))).toBe(true);
+    expect(builtManifest.content_scripts).toEqual(expectedContentScripts);
   });
 });
