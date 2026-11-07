@@ -1,5 +1,5 @@
 export type PageKind = "repository" | "blob" | "commit";
-export type UnsupportedRoute = { kind: "unsupported" };
+export type UnsupportedRoute = Readonly<{ kind: "unsupported" }>;
 export type RepositoryRoute = {
   kind: PageKind;
   repo: string;
@@ -9,7 +9,7 @@ export type RepositoryRoute = {
 export type CnbRoute = RepositoryRoute | UnsupportedRoute;
 export type RouteHints = { knownRef?: string | null };
 
-const unsupportedRoute: UnsupportedRoute = { kind: "unsupported" };
+const cnbOrigin = "https://cnb.cool";
 const nonRepositoryRoutes = new Set([
   "profile",
   "login",
@@ -28,38 +28,138 @@ const nonRepositoryRoutes = new Set([
   "wx",
 ]);
 
-function decodeSegments(pathname: string): string[] | null {
+function unsupported(): UnsupportedRoute {
+  return Object.freeze({ kind: "unsupported" });
+}
+
+function encodedPathSegments(pathname: string): string[] | null {
+  const segments = pathname.split("/").slice(1);
+  if (segments.at(-1) === "") {
+    segments.pop();
+  }
+  return segments.some((segment) => segment.length === 0) ? null : segments;
+}
+
+function isSafeSegment(segment: string): boolean {
+  return (
+    segment.length > 0 &&
+    segment !== "." &&
+    segment !== ".." &&
+    !Array.from(segment).some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 31 || codePoint === 127;
+    })
+  );
+}
+
+function hasValidBoundaries(value: string, allowSlash: boolean): boolean {
+  const segments = value.split("/");
+  return (
+    (allowSlash || segments.length === 1) &&
+    segments.every((segment) => isSafeSegment(segment) && !segment.includes("\\"))
+  );
+}
+
+function decodeSegment(segment: string): string | null {
   try {
-    const encodedSegments = pathname.split("/").slice(1);
-    if (encodedSegments.at(-1) === "") {
-      encodedSegments.pop();
-    }
-    if (encodedSegments.some((segment) => segment.length === 0)) {
-      return null;
-    }
-    const decodedSegments = encodedSegments.map((segment) => decodeURIComponent(segment));
-    return decodedSegments.some((segment) => segment.length === 0 || segment.includes("/"))
-      ? null
-      : decodedSegments;
+    const decoded = decodeURIComponent(segment);
+    return isSafeSegment(decoded) && !decoded.includes("/") ? decoded : null;
   } catch {
     return null;
   }
 }
 
+function decodeSegments(segments: string[]): string[] | null {
+  const decoded = segments.map(decodeSegment);
+  return decoded.some((segment) => segment === null) ? null : (decoded as string[]);
+}
+
+function validatedSegments(value: string, minimum: number, label: string): string[] {
+  const segments = value.split("/");
+  if (
+    segments.length < minimum ||
+    segments.some((segment) => !isSafeSegment(segment) || segment.includes("\\"))
+  ) {
+    throw new TypeError(`Invalid ${label}`);
+  }
+  return segments;
+}
+
+function parseBlobRoute(
+  repo: string,
+  encodedRouteSegments: string[],
+  knownRef: string | null | undefined,
+): CnbRoute {
+  const encodedRef = encodedRouteSegments[0];
+  if (encodedRef === undefined) {
+    return unsupported();
+  }
+
+  let decodedRef: string;
+  try {
+    decodedRef = decodeURIComponent(encodedRef);
+  } catch {
+    return unsupported();
+  }
+
+  const containsEncodedBoundary = decodedRef.includes("/");
+  if (
+    !hasValidBoundaries(decodedRef, true) ||
+    (containsEncodedBoundary && decodedRef !== knownRef)
+  ) {
+    return unsupported();
+  }
+
+  const encodedFileSegments = encodedRouteSegments.slice(1);
+  const fileSegments = decodeSegments(encodedFileSegments);
+  if (fileSegments === null) {
+    return unsupported();
+  }
+
+  if (containsEncodedBoundary || knownRef === decodedRef) {
+    return {
+      kind: "blob",
+      repo,
+      ref: decodedRef,
+      filePath: fileSegments.length > 0 ? fileSegments.join("/") : null,
+    };
+  }
+
+  const knownRefSegments = knownRef?.split("/") ?? [];
+  const decodedRouteSegments = [decodedRef, ...fileSegments];
+  const matchesKnownRef =
+    knownRefSegments.length > 0 &&
+    hasValidBoundaries(knownRef ?? "", true) &&
+    knownRefSegments.every((segment, index) => decodedRouteSegments[index] === segment);
+  const ref = matchesKnownRef ? (knownRef ?? decodedRef) : decodedRef;
+  const pathStart = matchesKnownRef ? knownRefSegments.length : 1;
+  return {
+    kind: "blob",
+    repo,
+    ref,
+    filePath: decodedRouteSegments.slice(pathStart).join("/") || null,
+  };
+}
+
 export function parseCnbRoute(url: URL, hints: RouteHints = {}): CnbRoute {
-  if (url.protocol !== "https:" || url.hostname !== "cnb.cool") {
-    return unsupportedRoute;
+  if (url.origin !== cnbOrigin || url.username !== "" || url.password !== "") {
+    return unsupported();
   }
 
-  const segments = decodeSegments(url.pathname);
-  if (segments === null || segments.length < 2 || nonRepositoryRoutes.has(segments[0])) {
-    return unsupportedRoute;
+  const encodedSegments = encodedPathSegments(url.pathname);
+  if (encodedSegments === null) {
+    return unsupported();
   }
 
-  const markerIndex = segments.indexOf("-");
-  const repoSegments = markerIndex === -1 ? segments : segments.slice(0, markerIndex);
-  if (repoSegments.length < 2) {
-    return unsupportedRoute;
+  const markerIndex = encodedSegments.indexOf("-");
+  const encodedRepoSegments = markerIndex === -1 ? encodedSegments : encodedSegments.slice(0, markerIndex);
+  const repoSegments = decodeSegments(encodedRepoSegments);
+  if (
+    repoSegments === null ||
+    repoSegments.length < 2 ||
+    nonRepositoryRoutes.has(repoSegments[0])
+  ) {
+    return unsupported();
   }
 
   const repo = repoSegments.join("/");
@@ -67,36 +167,27 @@ export function parseCnbRoute(url: URL, hints: RouteHints = {}): CnbRoute {
     return { kind: "repository", repo, ref: null, filePath: null };
   }
 
-  const [routeKind, ...routeSegments] = segments.slice(markerIndex + 1);
-  if (routeKind === "commit" && routeSegments.length === 1 && routeSegments[0].length > 0) {
-    return { kind: "commit", repo, ref: null, filePath: null };
+  const routeKind = decodeSegment(encodedSegments[markerIndex + 1] ?? "");
+  const encodedRouteSegments = encodedSegments.slice(markerIndex + 2);
+  if (routeKind === "commit") {
+    const commitSegments = decodeSegments(encodedRouteSegments);
+    return commitSegments?.length === 1
+      ? { kind: "commit", repo, ref: null, filePath: null }
+      : unsupported();
   }
-
-  const provisionalRef = routeSegments[0];
-  if (routeKind !== "blob" || provisionalRef === undefined) {
-    return unsupportedRoute;
-  }
-
-  const knownRefSegments = hints.knownRef?.split("/") ?? [];
-  const matchesKnownRef =
-    knownRefSegments.every((segment) => segment.length > 0) &&
-    knownRefSegments.length > 0 &&
-    knownRefSegments.every((segment, index) => routeSegments[index] === segment);
-  const ref = matchesKnownRef ? (hints.knownRef ?? provisionalRef) : provisionalRef;
-  const fileSegments = routeSegments.slice(matchesKnownRef ? knownRefSegments.length : 1);
-  return {
-    kind: "blob",
-    repo,
-    ref,
-    filePath: fileSegments.length > 0 ? fileSegments.join("/") : null,
-  };
+  return routeKind === "blob"
+    ? parseBlobRoute(repo, encodedRouteSegments, hints.knownRef)
+    : unsupported();
 }
 
 export function buildBlobUrl(route: RepositoryRoute, ref: string, path: string): URL {
-  const encodePath = (value: string): string => value.split("/").map(encodeURIComponent).join("/");
-  const filePath = path.length > 0 ? `/${encodePath(path)}` : "";
+  const repoSegments = validatedSegments(route.repo, 2, "repository");
+  const refSegments = validatedSegments(ref, 1, "ref");
+  const pathSegments = validatedSegments(path, 1, "path");
+  const repo = repoSegments.map(encodeURIComponent).join("/");
+  const filePath = pathSegments.map(encodeURIComponent).join("/");
   return new URL(
-    `/${encodePath(route.repo)}/-/blob/${encodeURIComponent(ref)}${filePath}`,
-    "https://cnb.cool",
+    `/${repo}/-/blob/${encodeURIComponent(refSegments.join("/"))}/${filePath}`,
+    cnbOrigin,
   );
 }
