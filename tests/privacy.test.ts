@@ -113,8 +113,21 @@ describe("privacy boundary", () => {
     ["method alias", "const write = browser.storage.local.set; write({ anything: true });"],
     ["assignment alias", "let api; api = browser; api['storage'].local.set({ anything: true });"],
     ["destructuring assignment", "let storage; ({ storage } = chrome); storage.local.set({ anything: true });"],
-  ])("detects %s browser-storage bypasses", (_label, source) => {
+    ["constant computed key", "const key = 'storage'; chrome[key].local.set({ anything: true });"],
+    ["TS wrappers", "((chrome as typeof chrome)!.storage).local.set({ anything: true });"],
+    ["nested renamed declaration", "const { storage: { local: area } } = chrome; area.set({ ...payload });"],
+    ["nested renamed assignment", "let area; ({ storage: { local: area } } = browser); area.set({ ...payload });"],
+    ["alias cycle", "let a = chrome; let b = a; a = b; b = a; b.storage.local.set({ anything: true });"],
+  ])("detects %s browser-storage bypasses", { timeout: 1_000 }, (_label, source) => {
     expect(findBrowserStorageReferences(source, "mutation.ts")).not.toEqual([]);
+  });
+
+  it.each([
+    ["parameter", "function save(chrome: { storage: unknown }) { chrome.storage; }"],
+    ["block binding", "{ const browser = { storage: { local: fake } }; browser.storage.local.set({}); }"],
+    ["nested parameter", "const run = (chrome: unknown) => (chrome as any).storage.local.set({});"],
+  ])("ignores shadowed %s identifiers", { timeout: 1_000 }, (_label, source) => {
+    expect(findBrowserStorageReferences(source, "shadowed.ts")).toEqual([]);
   });
 
   it("serializes exactly panel open state and width through the real adapter", async () => {
@@ -149,5 +162,11 @@ describe("privacy boundary", () => {
     expect(builtManifest.permissions).toEqual(["storage"]);
     expect(builtManifest.host_permissions).toEqual(["https://cnb.cool/*"]);
     expect(builtManifest.content_scripts).toEqual(expectedContentScripts);
+    const builtJavaScript = globSync("**/*.js", { cwd: extensionRoot }).sort();
+    const builtStorageUsers = builtJavaScript.filter((file) =>
+      findBrowserStorageReferences(readFileSync(path.join(extensionRoot, file), "utf8"), file).length > 0,
+    );
+    expect(builtStorageUsers).toEqual(["content/index.js"]);
+    expect(readFileSync(path.join(extensionRoot, "content/index.js"), "utf8")).toContain("repotreex.preferences");
   });
 });

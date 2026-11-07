@@ -304,3 +304,92 @@ would still require review. The build contract relies on path validation plus
 an empty-leaf precondition; exported callers cannot delete an existing output
 tree. Live browser/private-repository acceptance remains unrun and continues to
 be governed by `docs/manual-test.md`.
+
+## Fix round 3
+
+Resolved the remaining build/package safety and storage-scan review findings on
+top of `6af1f6c`, without subagents, permission expansion, live CNB access,
+OAuth activation, store publication, or push.
+
+### Build and package safety
+
+- Default builds now preflight the manifest, all four icons and all three
+  entrypoints before changing the last usable build. Inputs must be regular
+  files and may not traverse symlinks. The replacement is first built in a
+  fresh staging directory and moved into `dist/extension` only after the build
+  succeeds.
+- Before default cleanup, the project/default safe root and every output path
+  component are checked with `lstat`; a `dist` symlink, intermediate symlink or
+  final symlink is rejected. Canonical containment is checked for prepared
+  outputs, and the safe root is rechecked immediately before replacement.
+- Programmatic builds require explicit caller-created empty output and safe-root
+  directories. They verify canonical containment, reject symlink root,
+  intermediate and final components, and perform no recursive deletion.
+- Programmatic packaging requires a caller-created empty OS-temporary directory,
+  rejects symlink roots, and only cleans its own verified real `extension`
+  child after an error. It never cleans through an unvalidated or symbolic-link
+  root. Default package/build behavior remains `dist/extension` plus the ZIP.
+- Real-temp sentinel tests cover broad/absent/nonempty outputs, symlink safe
+  roots, intermediate and final symlinks, symlink source input, missing source
+  input, unsafe default replacement, and package-root preservation.
+
+### Storage architecture scan
+
+- Replaced the unbounded global fixed-point alias map with one bounded AST walk
+  and lexical scope stacks. Parameters and local declarations shadow ambient
+  `chrome`/`browser`, avoiding prior scope conflation and alias-cycle hangs.
+- The scanner unwraps parentheses, TypeScript assertions and non-null
+  expressions; follows constant computed `storage` keys, root/storage/area/
+  method aliases, assignments, nested renamed declaration and assignment
+  destructuring, and spread-payload writes. Reviewer mutation cases and shadowed
+  false-positive cases run with one-second per-case timeouts.
+- Fresh built JavaScript is independently scanned: only `content/index.js` may
+  contain browser-storage evidence, and it must contain the exact preferences
+  key. Exact source/built manifest records and exact eight-file ZIP checks were
+  retained unchanged.
+
+### RED/GREEN evidence
+
+The first round-3 focused run under Node 24.22.2 produced ten expected failures:
+intermediate symlink, missing caller-created output, missing default API,
+symlink default root, nonempty programmatic package root, constant-computed and
+TypeScript-wrapped access, nested renamed assignment, and two shadowing cases.
+After implementation, the focused command passed:
+
+```text
+$ npx --yes -p node@24 -c 'node --version && npm test -- tests/build.test.ts tests/privacy.test.ts tests/package.test.ts && npm run typecheck && npm run lint'
+v24.22.2
+Test Files 3 passed (3)
+Tests 45 passed (45)
+TypeScript and ESLint exited 0
+```
+
+### Final clean-dist validation
+
+The final run moved ignored `dist/` outside the checkout, ran the full suite
+before packaging, asserted `test ! -e dist`, then rebuilt and inspected the
+archive:
+
+```sh
+npx --yes -p node@24 -c 'node --version && npm test'
+test ! -e dist
+npx --yes -p node@24 -c 'npm run typecheck && npm run lint && npm run package'
+unzip -t dist/repotreex-0.1.0.zip
+unzip -Z1 dist/repotreex-0.1.0.zip
+git diff --check
+```
+
+Results: Node 24.22.2; 15/15 test files and 752/752 tests passed; tests left
+project `dist/` absent; both TypeScript scopes and ESLint passed; package/build
+exited 0; ZIP integrity passed and entries remained exactly the four icons,
+`manifest.json`, `content/index.js`, `content/panel.js`, and `page/bridge.js`;
+diff whitespace passed.
+
+### Remaining concerns
+
+Filesystem validation minimizes but cannot eliminate a hostile same-user local
+TOCTOU race between the final `lstat`/`realpath` checks and filesystem mutation;
+the project/default output root must not be concurrently modified during build.
+The AST scan is a bounded conservative architecture guard, not whole-program
+taint analysis against eval-generated or deliberately obfuscated access. Live
+browser/private-repository acceptance remains governed by `docs/manual-test.md`.

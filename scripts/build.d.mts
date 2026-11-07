@@ -8,7 +8,17 @@ export function prepareBuildOutput(options: {
   safeRoot: string;
 }): Promise<{ outputRoot: string; safeRoot: string }>;
 
-export function buildExtension(options?: {
+export function preflightBuildInputs(sourceRoot?: string): Promise<void>;
+
+export function buildExtension(options: {
+  outputRoot: string;
+  safeRoot: string;
+}): Promise<{ outputRoot: string; safeRoot: string }>;
+
+export function buildDefaultExtension(options?: {
+  sourceRoot?: string;
   outputRoot?: string;
   safeRoot?: string;
 }): Promise<{ outputRoot: string; safeRoot: string }>;
+
+export function buildDefaultProject(): Promise<{ outputRoot: string; safeRoot: string }>;

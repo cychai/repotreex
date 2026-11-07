@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -55,4 +55,34 @@ describe("extension package", () => {
     expect(shanghai.files).toEqual(expectedArchiveEntries);
     expect(shanghai.hash).toBe(utc.hash);
   });
+
+  it("rejects a symlink package root without touching its target", async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), "repotreex-package-safety-"));
+    const target = path.join(parent, "target");
+    const outputRoot = path.join(parent, "output-link");
+    const sentinel = path.join(target, "extension", "keep-me.txt");
+    try {
+      await mkdir(path.dirname(sentinel), { recursive: true });
+      await writeFile(sentinel, "keep", "utf8");
+      await symlink(target, outputRoot);
+
+      await expect(buildPackage({ outputRoot })).rejects.toThrow(/symbolic link/i);
+      await expect(readFile(sentinel, "utf8")).resolves.toBe("keep");
+    } finally {
+      await rm(parent, { force: true, recursive: true });
+    }
+  });
+
+  it("requires an empty caller-created programmatic package root", async () => {
+    const outputRoot = await mkdtemp(path.join(tmpdir(), "repotreex-package-safety-"));
+    const sentinel = path.join(outputRoot, "keep-me.txt");
+    try {
+      await writeFile(sentinel, "keep", "utf8");
+      await expect(buildPackage({ outputRoot })).rejects.toThrow(/empty/i);
+      await expect(readFile(sentinel, "utf8")).resolves.toBe("keep");
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
 });
