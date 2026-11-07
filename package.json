@@ -1,0 +1,26 @@
+{
+  "name": "repotreex",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "package": "node scripts/package.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests scripts"
+  },
+  "devDependencies": {
+    "@eslint/js": "latest",
+    "@types/chrome": "latest",
+    "@types/node": "latest",
+    "esbuild": "latest",
+    "eslint": "latest",
+    "globals": "latest",
+    "jsdom": "latest",
+    "typescript": "latest",
+    "typescript-eslint": "latest",
+    "vitest": "latest"
+  }
+}
