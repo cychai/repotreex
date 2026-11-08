@@ -51,15 +51,14 @@ export type Content = TreeContent | BlobContent;
 
 export type Branch = {
   name: string;
-  sha: string;
+  commit: { sha: string };
 };
 
 export type Tag = {
   name: string;
-  sha: string;
+  commit: { sha: string };
 };
 
 export type HeadRef = {
   name: string;
-  sha: string;
 };

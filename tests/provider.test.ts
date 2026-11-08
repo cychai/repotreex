@@ -4,7 +4,7 @@ import { createSessionProvider, type RepositoryProvider } from "../src/content/p
 import { RepositoryError } from "../src/shared/errors";
 import { BRIDGE_REQUEST_EVENT, BRIDGE_RESPONSE_EVENT, type BridgeRequest } from "../src/shared/protocol";
 import {
-  blobFixture, headFixture, refPageFixture, rootFixture, treeEntriesFixture, treeFixture,
+  blobFixture, branchFixture, headFixture, refFixture, refPageFixture, rootFixture, treeEntriesFixture, treeFixture,
 } from "./fixtures/repository";
 
 function providerFor(data: unknown) {
@@ -68,6 +68,22 @@ describe("session provider", () => {
     expect(request).toHaveBeenCalledExactlyOnceWith({ type: "get-head", repo: "acme/repo" }, { signal: controller.signal });
   });
 
+  it("accepts the live CNB head and branch shapes where hashes are absent or nested in commit", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce({ ...headFixture, protected: true })
+      .mockResolvedValueOnce([
+        { ...branchFixture, protected: true, locked: false },
+        { name: "release/v1", commit: { sha: "release-sha" }, protected: false, locked: false },
+      ]);
+    const provider = createSessionProvider({ request, dispose: vi.fn() });
+
+    await expect(provider.getHead("acme/repo")).resolves.toBe("main");
+    await expect(provider.listBranches("acme/repo")).resolves.toEqual([
+      { kind: "branch", name: "main", sha: "head-sha" },
+      { kind: "branch", name: "release/v1", sha: "release-sha" },
+    ]);
+  });
+
   it.each([undefined, null, [], {}, "tree", blobFixture, { ...treeFixture, type: "link" }, { ...treeFixture, type: "submodule" },
     { type: "tree", entries: [{ type: "blob", path: 42 }] }, Object.create(treeFixture),
   ])("rejects malformed or non-tree content %#", async (data) => {
@@ -115,11 +131,9 @@ describe("session provider", () => {
       .provider.listDirectory("acme/repo", "main", "src"));
   });
 
-  for (const field of ["name", "sha"] as const) {
-    it.each(badStrings)(`rejects invalid head ${field} %#`, async (value) => {
-      await expectCompatibility(providerFor({ ...headFixture, [field]: value }).provider.getHead("acme/repo"));
-    });
-  }
+  it.each(badStrings)("rejects invalid head name %#", async (value) => {
+    await expectCompatibility(providerFor({ ...headFixture, name: value }).provider.getHead("acme/repo"));
+  });
 
   it.each([undefined, null, [], "main", {}, Object.create(headFixture)])("rejects malformed head records %#", async (data) => {
     await expectCompatibility(providerFor(data).provider.getHead("acme/repo"));
@@ -176,14 +190,14 @@ describe("session provider", () => {
     });
 
     it.each([undefined, null, {}, { entries: [] }, "refs", [null], [42], [[]], [{}], new Array(1),
-      [Object.create(headFixture)], [...refPageFixture(), headFixture],
+      [Object.create(refFixture)], [...refPageFixture(), refFixture],
     ])(`${method} rejects malformed or oversized pages %#`, async (data) => {
       await expectCompatibility(providerFor(data).provider[method]("acme/repo"));
     });
 
     for (const field of ["name", "sha"] as const) {
       it.each(badStrings)(`${method} rejects invalid ref ${field} %#`, async (value) => {
-        await expectCompatibility(providerFor([{ ...headFixture, [field]: value }]).provider[method]("acme/repo"));
+        await expectCompatibility(providerFor([{ ...refFixture, [field]: value }]).provider[method]("acme/repo"));
       });
     }
 
@@ -191,6 +205,20 @@ describe("session provider", () => {
       const request = vi.fn().mockResolvedValueOnce(refPageFixture()).mockResolvedValueOnce([{ name: "ref-000" }]);
       await expectCompatibility(createSessionProvider({ request, dispose: vi.fn() })[method]("acme/repo"));
       expect(request).toHaveBeenCalledTimes(2);
+    });
+
+    it(`${method} rejects malformed nested commit hashes from the live CNB ref shape`, async () => {
+      const data = [{ name: "main", commit: { sha: 42 } }];
+      await expectCompatibility(providerFor(data).provider[method]("acme/repo"));
+    });
+
+    it(`${method} rejects accessor-backed nested commit hashes without executing them`, async () => {
+      let reads = 0;
+      const commit = Object.defineProperty({ sha: "head-sha" }, "sha", {
+        get() { reads++; return "head-sha"; },
+      });
+      await expectCompatibility(providerFor([{ name: "main", commit }]).provider[method]("acme/repo"));
+      expect(reads).toBe(0);
     });
 
     it(`${method} stops between pages if the signal fires even when the client resolves late`, async () => {
@@ -222,7 +250,7 @@ describe("session provider", () => {
   });
 
   it("does not retain ref responses between calls or forward additional fields", async () => {
-    const request = vi.fn().mockResolvedValueOnce([{ ...headFixture, extra: "synthetic-extra" }]).mockResolvedValueOnce([]);
+    const request = vi.fn().mockResolvedValueOnce([{ ...refFixture, extra: "synthetic-extra" }]).mockResolvedValueOnce([]);
     const provider = createSessionProvider({ request, dispose: vi.fn() });
     await expect(provider.listBranches("acme/repo")).resolves.toEqual([{ kind: "branch", name: "main", sha: "head-sha" }]);
     await expect(provider.listBranches("acme/repo")).resolves.toEqual([]);
@@ -246,7 +274,7 @@ describe("session provider", () => {
   });
 
   it.each(calls)("rejects $label if abort lands between request settlement and normalization", async ({ label, run }) => {
-    const data = label === "head" ? headFixture : label === "directory" ? treeFixture : [headFixture];
+    const data = label === "head" ? headFixture : label === "directory" ? treeFixture : [refFixture];
     const { provider } = providerFor(data);
     const controller = new AbortController();
     const promise = run(provider, controller.signal);
@@ -303,7 +331,7 @@ describe("session provider", () => {
   });
 
   it.each(calls)("rejects $label if disposal lands between request settlement and normalization", async ({ label, run }) => {
-    const data = label === "head" ? headFixture : label === "directory" ? treeFixture : [headFixture];
+    const data = label === "head" ? headFixture : label === "directory" ? treeFixture : [refFixture];
     const { provider } = providerFor(data);
     const promise = run(provider);
     queueMicrotask(() => provider.dispose());
@@ -322,14 +350,14 @@ describe("session provider", () => {
 
 describe("hostile provider payloads", () => {
   const recordCases = [
-    { label: "head", fixture: headFixture, fields: ["name", "sha"], wrap: (record: object) => record,
+    { label: "head", fixture: headFixture, fields: ["name"], wrap: (record: object) => record,
       run: (provider: RepositoryProvider) => provider.getHead("acme/repo") },
     { label: "tree", fixture: treeFixture, fields: ["type", "path", "name", "sha", "size", "entries"], wrap: (record: object) => record,
       run: (provider: RepositoryProvider) => provider.listDirectory("acme/repo", "main", "src") },
     { label: "entry", fixture: treeEntriesFixture[0], fields: ["type", "path", "name", "sha", "size"],
       wrap: (record: object) => ({ ...treeFixture, entries: [record] }),
       run: (provider: RepositoryProvider) => provider.listDirectory("acme/repo", "main", "src") },
-    ...refMethods.map((method) => ({ label: method, fixture: headFixture, fields: ["name", "sha"],
+    ...refMethods.map((method) => ({ label: method, fixture: refFixture, fields: ["name", "sha"],
       wrap: (record: object) => [record], run: (provider: RepositoryProvider) => provider[method]("acme/repo") })),
   ];
 
@@ -373,7 +401,7 @@ describe("hostile provider payloads", () => {
 
   it.each(calls)("checks activity after successful $label inspection", async ({ label, run }) => {
     const controller = new AbortController();
-    const fixture = label === "directory" ? treeFixture : headFixture;
+    const fixture = label === "directory" ? treeFixture : label === "head" ? headFixture : refFixture;
     const record = new Proxy(fixture, {
       getOwnPropertyDescriptor(target, key) {
         controller.abort("synthetic reason");
@@ -385,7 +413,7 @@ describe("hostile provider payloads", () => {
   });
 
   it.each(calls)("checks disposal after successful $label inspection", async ({ label, run }) => {
-    const fixture = label === "directory" ? treeFixture : headFixture;
+    const fixture = label === "directory" ? treeFixture : label === "head" ? headFixture : refFixture;
     const record = new Proxy(fixture, {
       getOwnPropertyDescriptor(target, key) {
         provider.dispose();
@@ -413,13 +441,13 @@ describe("hostile provider payloads", () => {
       },
     });
     await expect(providerFor(data).provider.getHead("acme/repo")).resolves.toBe("main");
-    expect(inspections).toEqual(["name", "sha"]);
+    expect(inspections).toEqual(["name"]);
   });
 
   const arrayCases = [
     { label: "entries", valid: treeEntriesFixture[1], wrap: (array: object) => ({ ...treeFixture, entries: array }),
       run: (provider: RepositoryProvider) => provider.listDirectory("acme/repo", "main", "src") },
-    ...refMethods.map((method) => ({ label: method, valid: headFixture, wrap: (array: object) => array,
+    ...refMethods.map((method) => ({ label: method, valid: refFixture, wrap: (array: object) => array,
       run: (provider: RepositoryProvider) => provider[method]("acme/repo") })),
   ];
 
@@ -522,7 +550,7 @@ describe("hostile provider payloads", () => {
 
   it.each(refMethods)("snapshots %s raw page length once without direct array reads", async (method) => {
     const reads: PropertyKey[] = [];
-    const data = new Proxy([headFixture], {
+    const data = new Proxy([refFixture], {
       get(target, key) {
         if (key === "then") return undefined;
         throw new Error("synthetic-array-get-trap");

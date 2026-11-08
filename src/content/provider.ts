@@ -1,6 +1,6 @@
 import { RepositoryError } from "../shared/errors";
 import type {
-  Branch, BridgeOperation, HeadRef, Tag, TreeContent, TreeEntry, TreeEntryType,
+  BridgeOperation, TreeContent, TreeEntry, TreeEntryType,
 } from "../shared/protocol";
 import type { BridgeClient } from "./bridge-client";
 
@@ -93,10 +93,19 @@ function snapshotTreeContent(value: unknown): TreeContent {
   return { type, path, name, sha, size, entries: snapshotArray(entries, snapshotTreeEntry) };
 }
 
-function snapshotRef(value: unknown): HeadRef | Branch | Tag {
+function snapshotHead(value: unknown): { name: string } {
   const record = requireRecord(value);
   const name = ownData(record, "name");
-  const sha = ownData(record, "sha");
+  if (!isNonEmptyString(name)) throw new RepositoryError("compatibility");
+  return { name };
+}
+
+function snapshotRef(value: unknown): { name: string; sha: string } {
+  const record = requireRecord(value);
+  const name = ownData(record, "name");
+  const directSha = ownDataDescriptor(record, "sha")?.value;
+  const commit = ownDataDescriptor(record, "commit")?.value;
+  const sha = directSha ?? (commit === undefined ? undefined : ownData(requireRecord(commit), "sha"));
   if (!isNonEmptyString(name) || !isNonEmptyString(sha)) throw new RepositoryError("compatibility");
   return { name, sha };
 }
@@ -149,7 +158,7 @@ export function createSessionProvider(client: BridgeClient): RepositoryProvider 
     async getHead(repo, signal) {
       const data = await request({ type: "get-head", repo }, signal);
       ensureActive(signal);
-      const head = inspectPayload(() => snapshotRef(data));
+      const head = inspectPayload(() => snapshotHead(data));
       ensureActive(signal);
       return head.name;
     },

@@ -1,7 +1,11 @@
-import type { BlobContent, HeadRef, TreeContent, TreeEntry } from "../../src/shared/protocol";
+import type { BlobContent, Branch, HeadRef, TreeContent, TreeEntry } from "../../src/shared/protocol";
 
 // Synthetic data only; never capture responses from an actual repository.
-export const headFixture: HeadRef = { name: "main", sha: "head-sha" };
+export const headFixture: HeadRef = { name: "main" };
+
+export const refFixture = { name: "main", sha: "head-sha" };
+
+export const branchFixture: Branch = { name: "main", commit: { sha: "head-sha" } };
 
 export const treeEntriesFixture: TreeEntry[] = [
   { type: "tree", name: "nested", path: "src/nested", sha: "nested-sha", size: 0 },

@@ -31,12 +31,16 @@ await page.route("**/*", async (route) => {
   assert.equal(request.method(), "GET"); assert.match(url.pathname, /\/-\/git\//);
   apiRequests.push({ pathname: url.pathname, ref: url.searchParams.get("ref") });
   if (url.pathname.endsWith("/head")) {
-    await route.fulfill({ json: { name: "main", sha: "synthetic-head" } }); return;
+    await route.fulfill({ json: { name: "main", protected: true } }); return;
   }
   if (url.pathname.endsWith("/branches")) {
-    await route.fulfill({ json: ["main", "dev", "release", "release/v1"].map((name) => ({ name, sha: "synthetic-ref" })) }); return;
+    await route.fulfill({ json: ["main", "dev", "release", "release/v1"].map((name) => ({
+      name, commit: { sha: "synthetic-ref" }, protected: false, locked: false,
+    })) }); return;
   }
-  if (url.pathname.endsWith("/tags")) { await route.fulfill({ json: [{ name: "release/v1/patch", sha: "synthetic-tag" }] }); return; }
+  if (url.pathname.endsWith("/tags")) {
+    await route.fulfill({ json: [{ name: "release/v1/patch", commit: { sha: "synthetic-tag" } }] }); return;
+  }
   const path = url.pathname.split("/-/git/contents")[1]?.replace(/^\//, "");
   if (mode === "delay" && path === "docs") { delayed = route; return; }
   if (mode === "auth" && path === "docs") { await route.fulfill({ status: 401, json: {} }); return; }
