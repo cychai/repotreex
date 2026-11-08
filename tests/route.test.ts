@@ -159,6 +159,42 @@ describe("buildCnbFileUrl", () => {
     );
   });
 
+  it("preserves literal percent characters in CNB refs and paths", () => {
+    const route = {
+      platform: "cnb", view: "root", repository: "acme/platform/web", ref: null, path: null,
+    } as const;
+    const url = buildCnbFileUrl(route, "release%2Fv1", "docs/100%.md");
+
+    expect(url.href).toBe(
+      "https://cnb.cool/acme/platform/web/-/blob/release%252Fv1/docs/100%25.md",
+    );
+    expect(parseCnbRoute(url, { knownRef: "release%2Fv1" })).toEqual({
+      platform: "cnb",
+      view: "blob",
+      repository: "acme/platform/web",
+      ref: "release%2Fv1",
+      path: "docs/100%.md",
+    });
+  });
+
+  it("preserves the prior CNB C1-character semantics", () => {
+    const route = {
+      platform: "cnb", view: "root", repository: "acme/platform/web", ref: null, path: null,
+    } as const;
+    const url = buildCnbFileUrl(route, "release\u0085v1", "src/a\u009f.ts");
+
+    expect(url.href).toBe(
+      "https://cnb.cool/acme/platform/web/-/blob/release%C2%85v1/src/a%C2%9F.ts",
+    );
+    expect(parseCnbRoute(url, { knownRef: "release\u0085v1" })).toEqual({
+      platform: "cnb",
+      view: "blob",
+      repository: "acme/platform/web",
+      ref: "release\u0085v1",
+      path: "src/a\u009f.ts",
+    });
+  });
+
   it("reserves the dash marker only in repository segments", () => {
     const route = {
       platform: "cnb", view: "root", repository: "acme/repo", ref: null, path: null,

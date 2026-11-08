@@ -1,7 +1,4 @@
 import type { RefOption } from "../../content/provider";
-import {
-  decodePathSegments, encodePathSegments, validatePathSegments,
-} from "../../shared/path";
 import type {
   PlatformRoute, RepositoryRoute, RouteHints, UnsupportedRoute,
 } from "../types";
@@ -22,18 +19,49 @@ function encodedPathSegments(pathname: string): string[] | null {
   return segments.some((segment) => segment.length === 0) ? null : segments;
 }
 
+function isSafeCnbSegment(segment: string): boolean {
+  return segment.length > 0 && segment !== "." && segment !== ".." &&
+    !Array.from(segment).some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 31 || codePoint === 127;
+    });
+}
+
 function decodeSegment(segment: string): string | null {
-  return decodePathSegments([segment])?.[0] ?? null;
+  try {
+    const decoded = decodeURIComponent(segment);
+    return isSafeCnbSegment(decoded) && !decoded.includes("/") && !decoded.includes("\\")
+      ? decoded
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeSegments(segments: readonly string[]): string[] | null {
+  const decoded = segments.map(decodeSegment);
+  return decoded.some((segment) => segment === null) ? null : (decoded as string[]);
 }
 
 function hasValidBoundaries(value: string, allowSlash: boolean): boolean {
-  if (!allowSlash && value.includes("/")) return false;
-  try {
-    validatePathSegments(value, { label: "route", minimum: 1 });
-    return true;
-  } catch {
-    return false;
+  const segments = value.split("/");
+  return (allowSlash || segments.length === 1) &&
+    segments.every((segment) => isSafeCnbSegment(segment) && !segment.includes("\\"));
+}
+
+function validatedSegments(
+  value: string,
+  minimum: number,
+  label: string,
+  rejectRouteMarker = false,
+): string[] {
+  const segments = value.split("/");
+  if (segments.length < minimum || segments.some((segment) =>
+    !isSafeCnbSegment(segment) || segment.includes("\\") ||
+    (rejectRouteMarker && segment === "-"))) {
+    throw new TypeError(`Invalid ${label}`);
   }
+  return segments;
 }
 
 function parseBlobRoute(
@@ -55,7 +83,7 @@ function parseBlobRoute(
   if (!hasValidBoundaries(decodedRef, true) ||
     (containsEncodedBoundary && decodedRef !== knownRef)) return unsupported();
 
-  const fileSegments = decodePathSegments(encodedRouteSegments.slice(1));
+  const fileSegments = decodeSegments(encodedRouteSegments.slice(1));
   if (fileSegments === null) return unsupported();
 
   if (containsEncodedBoundary || knownRef === decodedRef) {
@@ -82,7 +110,7 @@ export function parseCnbRoute(url: URL, hints: RouteHints = {}): PlatformRoute {
   const markerIndex = encodedSegments.indexOf("-");
   const encodedRepositorySegments = markerIndex === -1
     ? encodedSegments : encodedSegments.slice(0, markerIndex);
-  const repositorySegments = decodePathSegments(encodedRepositorySegments);
+  const repositorySegments = decodeSegments(encodedRepositorySegments);
   if (repositorySegments === null || repositorySegments.length < 2 ||
     nonRepositoryRoutes.has(repositorySegments[0])) return unsupported();
 
@@ -94,7 +122,7 @@ export function parseCnbRoute(url: URL, hints: RouteHints = {}): PlatformRoute {
   const routeKind = decodeSegment(encodedSegments[markerIndex + 1] ?? "");
   const encodedRouteSegments = encodedSegments.slice(markerIndex + 2);
   if (routeKind === "commit") {
-    const commitSegments = decodePathSegments(encodedRouteSegments);
+    const commitSegments = decodeSegments(encodedRouteSegments);
     return commitSegments?.length === 1
       ? { platform: "cnb", view: "root", repository, ref: null, path: null }
       : unsupported();
@@ -122,21 +150,18 @@ export function reconcileCnbRoute(
 
 function encodedRepository(route: RepositoryRoute): string {
   if (route.platform !== "cnb") throw new TypeError("Invalid platform");
-  const segments = validatePathSegments(route.repository, {
-    label: "repository", minimum: 2, markers: ["-"],
-  });
-  return encodePathSegments(segments);
+  return validatedSegments(route.repository, 2, "repository", true)
+    .map(encodeURIComponent).join("/");
 }
 
 function encodedRef(ref: string): string {
-  const segments = validatePathSegments(ref, { label: "ref", minimum: 1 });
-  return encodeURIComponent(segments.join("/"));
+  return encodeURIComponent(validatedSegments(ref, 1, "ref").join("/"));
 }
 
 export function buildCnbFileUrl(route: RepositoryRoute, ref: string, path: string): URL {
   const repository = encodedRepository(route);
   const reference = encodedRef(ref);
-  const filePath = encodePathSegments(validatePathSegments(path, { label: "path", minimum: 1 }));
+  const filePath = validatedSegments(path, 1, "path").map(encodeURIComponent).join("/");
   return new URL(`/${repository}/-/blob/${reference}/${filePath}`, cnbOrigin);
 }
 

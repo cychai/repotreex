@@ -121,3 +121,112 @@ TypeScript and ESLint completed with no diagnostics.
   the controller remains on legacy route types.
 - Legacy `createSessionProvider` and legacy route field names remain intentionally in use outside the
   adapter tests until the later migration tasks remove them.
+
+## Fix Round 1
+
+### Finding
+
+The adapter extraction reused the shared URL-segment primitive for already-decoded CNB semantic
+values. This decoded literal percent sequences twice and applied the shared helper's stricter C1
+control policy, regressing valid legacy CNB refs and paths.
+
+### RED Evidence
+
+Added adapter-boundary equivalence tests for a literal percent in both ref and path, plus the prior
+CNB acceptance of `U+0085` and `U+009F`.
+
+Command:
+
+```text
+npx vitest run tests/route.test.ts tests/provider.test.ts
+```
+
+Exit code: `1`.
+
+```text
+FAIL  tests/route.test.ts > buildCnbFileUrl > preserves literal percent characters in CNB refs and paths
+TypeError: Invalid ref
+
+FAIL  tests/route.test.ts > buildCnbFileUrl > preserves the prior CNB C1-character semantics
+TypeError: Invalid ref
+
+Test Files  1 failed | 1 passed (2)
+Tests       2 failed | 281 passed (283)
+Duration    730ms
+```
+
+Both failures originated from `validatePathSegments` through `encodedRef`, proving the reported
+double-decoding and C1-policy regression.
+
+### Fix
+
+- Restored the original CNB-local semantic segment validator in `src/platforms/cnb/route.ts`.
+- Kept raw URL segment decoding separate from validation of already-decoded route/ref/path values.
+- Preserved the legacy CNB control-character boundary: reject `U+0000-U+001F` and `U+007F`, while
+  retaining C1 characters.
+- Left `src/shared/path.ts` unchanged so Task 1's stricter shared URL-segment primitive remains intact.
+- Left provider types and provider implementation untouched in this fix round.
+
+### GREEN Evidence
+
+Focused command:
+
+```text
+npx vitest run tests/route.test.ts tests/provider.test.ts
+```
+
+Exit code: `0`.
+
+```text
+Test Files  2 passed (2)
+Tests       283 passed (283)
+Duration    571ms
+```
+
+Full suite:
+
+```text
+npm test
+```
+
+Exit code: `0`.
+
+```text
+Test Files  16 passed (16)
+Tests       878 passed (878)
+Duration    8.53s
+```
+
+Type checking:
+
+```text
+npm run typecheck
+```
+
+Exit code: `0`.
+
+```text
+> tsc --noEmit && tsc --noEmit -p tsconfig.tools.json
+```
+
+Lint:
+
+```text
+npm run lint
+```
+
+Exit code: `0`.
+
+```text
+> eslint src tests scripts
+```
+
+### Self-Review and Concerns
+
+- Scope is limited to `src/platforms/cnb/route.ts`, `tests/route.test.ts`, and this report.
+- Literal `%` now round-trips as `%25`, including `%2F` remaining literal data as `%252F`.
+- C1 values round-trip through UTF-8 percent encoding without weakening shared validation.
+- Existing malformed percent, encoded slash-boundary, dot-segment, backslash, route-marker, and
+  C0/DEL rejection tests remain green.
+- No new concerns beyond the intentionally deferred provider-type duplication and the existing
+  layout/legacy compatibility concerns recorded above.
