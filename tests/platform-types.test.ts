@@ -35,6 +35,12 @@ describe("shared platform contracts", () => {
     expect(() => validatePathSegments("acme/-/repo", options)).toThrow(TypeError);
   });
 
+  it.each(["main%ZZnext", "main%2Fnext"])(
+    "rejects malformed or boundary-changing encoded values %s", (value) => {
+      expect(() => validatePathSegments(value, { label: "ref", minimum: 1 })).toThrow(TypeError);
+    },
+  );
+
   it.each(["", "/main", "main/", "main//next", ".", "..", "main/../next", "main\\next", "main\nnext"])(
     "rejects unsafe segmented values %s", (value) => {
       expect(() => validatePathSegments(value, { label: "ref", minimum: 1 })).toThrow(TypeError);

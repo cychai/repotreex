@@ -43,9 +43,11 @@ export function validatePathSegments(
 ): string[] {
   if (options.allowEmpty && value === "") return [];
   const segments = value.split("/");
+  const decoded = decodePathSegments(segments);
   if (
     segments.length < options.minimum ||
-    segments.some((segment) => !isSafeSegment(segment, options.markers))
+    decoded === null ||
+    decoded.some((segment) => options.markers?.includes(segment))
   ) {
     throw new TypeError(`Invalid ${options.label}`);
   }
