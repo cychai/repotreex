@@ -3,6 +3,10 @@ import type { CnbBridgeOperation } from "../../shared/protocol";
 const cnbOrigin = "https://cnb.cool";
 const maximumBodyUnits = 2_000_000;
 const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const ownKeys = Reflect.ownKeys;
+const forbiddenControls = [
+  "method", "url", "headers", "credentials", "redirect", "maximumBodyUnits",
+] as const;
 
 export type CnbAllowedRequest = {
   url: URL;
@@ -29,14 +33,21 @@ function ownData(value: object, key: string): unknown {
 }
 
 function requireExactKeys(value: object, keys: readonly string[]): void {
-  let ownKeys: string[];
+  let actualKeys: (string | symbol)[];
   try {
-    ownKeys = Object.keys(value);
+    actualKeys = ownKeys(value);
   } catch {
     throw new TypeError("Invalid CNB bridge operation");
   }
-  if (ownKeys.length !== keys.length || !keys.every((key) => Object.hasOwn(value, key))) {
+  if (actualKeys.length !== keys.length || !keys.every((key) => actualKeys.includes(key))) {
     throw new TypeError("Invalid CNB bridge operation");
+  }
+  for (const control of forbiddenControls) {
+    try {
+      if (control in value && !Object.hasOwn(value, control)) throw new TypeError("Invalid CNB bridge operation");
+    } catch {
+      throw new TypeError("Invalid CNB bridge operation");
+    }
   }
 }
 

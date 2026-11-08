@@ -246,7 +246,38 @@ describe("buildAllowedRequest", () => {
       ownKeys() { throw new Error("private proxy failure"); },
     });
     expect(() => buildAllowedRequest(ownKeysProxy as never)).toThrow(TypeError);
+    const hasProxy = new Proxy({
+      platform: "cnb", type: "get-head", repository: "acme/repo",
+    }, {
+      has() { throw new Error("private proxy failure"); },
+    });
+    expect(() => buildAllowedRequest(hasProxy as never)).toThrow(TypeError);
   });
+
+  it("rejects every non-enumerable and symbol own operation key", () => {
+    const hidden = Object.defineProperty({
+      platform: "cnb", type: "get-head", repository: "acme/repo",
+    }, "method", { value: "POST" });
+    expect(() => buildAllowedRequest(hidden as never)).toThrow(TypeError);
+    const symbol = Symbol("caller-control");
+    const symbolOperation = {
+      platform: "cnb", type: "get-head", repository: "acme/repo", [symbol]: "POST",
+    };
+    expect(() => buildAllowedRequest(symbolOperation as never)).toThrow(TypeError);
+  });
+
+  it.each(["method", "url", "headers", "credentials", "redirect", "maximumBodyUnits"])(
+    "rejects inherited caller control %s without rejecting Object.prototype",
+    (control) => {
+      const operation = Object.assign(Object.create({ [control]: "hostile" }), {
+        platform: "cnb", type: "get-head", repository: "acme/repo",
+      });
+      expect(() => buildAllowedRequest(operation as never)).toThrow(TypeError);
+      expect(() => buildAllowedRequest({
+        platform: "cnb", type: "get-head", repository: "acme/repo",
+      })).not.toThrow();
+    },
+  );
 });
 
 describe("repository errors", () => {

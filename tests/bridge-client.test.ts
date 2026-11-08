@@ -138,6 +138,30 @@ describe("bridge client", () => {
     await expect(pending).resolves.toBe("valid");
   });
 
+  it("ignores proxy and accessor response payloads without reading or settling them", async () => {
+    const client = createClient();
+    const pending = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
+    const envelope = { channel: "channel-a", requestId: requests[0].requestId, ok: true, status: 200 };
+    let traps = 0;
+    respond(new Proxy({ ...envelope, data: "proxy" }, {
+      getOwnPropertyDescriptor(target, key) {
+        traps++;
+        if (key === "requestId") throw new Error("private proxy failure");
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    }));
+    let dataReads = 0;
+    const accessor = Object.defineProperty({ ...envelope }, "data", {
+      enumerable: true,
+      get() { dataReads++; return "accessor"; },
+    });
+    respond(accessor);
+    expect(traps).toBeGreaterThan(0);
+    expect(dataReads).toBe(0);
+    respond({ ...envelope, data: "valid" });
+    await expect(pending).resolves.toBe("valid");
+  });
+
   it.each([
     [401, "signed-out"], [403, "forbidden"], [404, "not-found"],
     [429, "rate-limited"], [503, "server"], [0, "network"],

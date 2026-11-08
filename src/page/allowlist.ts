@@ -9,6 +9,10 @@ export type AllowedRequest = {
 };
 
 const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const ownKeys = Reflect.ownKeys;
+const forbiddenControls = [
+  "method", "url", "headers", "credentials", "redirect", "maximumBodyUnits",
+] as const;
 
 function ownPlatform(operation: unknown): unknown {
   if (typeof operation !== "object" || operation === null || Array.isArray(operation)) {
@@ -24,7 +28,25 @@ function ownPlatform(operation: unknown): unknown {
   return descriptor.value;
 }
 
+function rejectCallerControls(operation: object): void {
+  let keys: (string | symbol)[];
+  try {
+    keys = ownKeys(operation);
+  } catch {
+    throw new TypeError("Invalid bridge operation");
+  }
+  if (keys.some((key) => typeof key === "symbol")) throw new TypeError("Invalid bridge operation");
+  for (const control of forbiddenControls) {
+    try {
+      if (control in operation) throw new TypeError("Invalid bridge operation");
+    } catch {
+      throw new TypeError("Invalid bridge operation");
+    }
+  }
+}
+
 export function buildAllowedRequest(operation: BridgeOperation): AllowedRequest {
+  rejectCallerControls(operation);
   switch (ownPlatform(operation)) {
     case "cnb":
       return buildCnbAllowedRequest(operation as Extract<BridgeOperation, { platform: "cnb" }>);

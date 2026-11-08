@@ -146,6 +146,21 @@ describe("page bridge handler", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("compares the active origin with the built URL under divergent proxy descriptors", async () => {
+    const target = {
+      platform: "github", type: "repository-page", repository: "acme/repo",
+      ref: null, path: "", view: "root",
+    };
+    const operation = new Proxy(target, {
+      get(current, key, receiver) { return key === "platform" ? "cnb" : Reflect.get(current, key, receiver); },
+      getOwnPropertyDescriptor: Reflect.getOwnPropertyDescriptor,
+    });
+    await expect(handleBridgeRequest({ ...request, operation }, fetchMock)).resolves.toEqual({
+      channel: "channel-a", requestId: "request-a", ok: false, status: 0, code: "compatibility",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("rejects inherited request correlation fields", async () => {
     await expect(handleBridgeRequest(Object.create(request), fetchMock)).resolves.toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -180,6 +195,19 @@ describe("page bridge handler", () => {
     await expect(handleBridgeRequest(ownKeysProxy, fetchMock)).resolves.toEqual({
       channel: "channel-a", requestId: "request-a", ok: false, status: 0, code: "compatibility",
     });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-enumerable, symbol, and inherited caller controls before fetch", async () => {
+    const hiddenOperation = Object.defineProperty({ ...request.operation }, "method", { value: "POST" });
+    const symbolOperation = { ...request.operation, [Symbol("caller-control")]: "POST" };
+    const inheritedOperations = ["method", "url", "headers", "credentials", "redirect", "maximumBodyUnits"]
+      .map((control) => Object.assign(Object.create({ [control]: "hostile" }), request.operation));
+    for (const operation of [hiddenOperation, symbolOperation, ...inheritedOperations]) {
+      await expect(handleBridgeRequest({ ...request, operation }, fetchMock)).resolves.toEqual({
+        channel: "channel-a", requestId: "request-a", ok: false, status: 0, code: "compatibility",
+      });
+    }
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

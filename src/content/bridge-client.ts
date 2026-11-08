@@ -23,6 +23,7 @@ type ValidBridgeResponse =
   | (Extract<BridgeResponse, { ok: false }> & { code: RepositoryErrorCode });
 
 const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const ownKeys = Reflect.ownKeys;
 
 function isErrorCode(value: unknown): value is RepositoryErrorCode {
   switch (value) {
@@ -40,29 +41,38 @@ function isErrorCode(value: unknown): value is RepositoryErrorCode {
   }
 }
 
-function isResponse(value: unknown): value is ValidBridgeResponse {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const ownData = (key: string): unknown => {
-    const descriptor = getOwnPropertyDescriptor(value, key);
-    return descriptor && "value" in descriptor ? descriptor.value : undefined;
-  };
-  const channel = ownData("channel");
-  const requestId = ownData("requestId");
-  const status = ownData("status");
-  const ok = ownData("ok");
+function snapshotResponse(value: unknown): ValidBridgeResponse | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  let keys: (string | symbol)[];
+  const fields = new Map<string, unknown>();
+  try {
+    keys = ownKeys(value);
+    for (const key of keys) {
+      if (typeof key !== "string") return null;
+      const descriptor = getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !("value" in descriptor)) return null;
+      fields.set(key, descriptor.value);
+    }
+  } catch {
+    return null;
+  }
+  const channel = fields.get("channel");
+  const requestId = fields.get("requestId");
+  const status = fields.get("status");
+  const ok = fields.get("ok");
   if (typeof channel !== "string" || typeof requestId !== "string" ||
-    typeof status !== "number" || !Number.isInteger(status)) return false;
-  const keys = ok === true
+    typeof status !== "number" || !Number.isInteger(status)) return null;
+  const expectedKeys = ok === true
     ? ["channel", "requestId", "ok", "status", "data"]
     : ["channel", "requestId", "ok", "status", "code"];
-  try {
-    if (Object.keys(value).length !== keys.length || !keys.every((key) => Object.hasOwn(value, key))) return false;
-  } catch {
-    return false;
+  if (keys.length !== expectedKeys.length || !expectedKeys.every((key) => fields.has(key))) return null;
+  if (ok === true && status >= 200 && status <= 299) {
+    return { channel, requestId, ok, status, data: fields.get("data") };
   }
-  return ok === true
-    ? status >= 200 && status <= 299
-    : ok === false && status >= 0 && status <= 599 && isErrorCode(ownData("code"));
+  const code = fields.get("code");
+  return ok === false && status >= 0 && status <= 599 && isErrorCode(code)
+    ? { channel, requestId, ok, status, code }
+    : null;
 }
 
 export function createBridgeClient(
@@ -82,8 +92,9 @@ export function createBridgeClient(
     return entry;
   };
   const onResponse = (event: Event) => {
-    if (!(event instanceof CustomEvent) || !isResponse(event.detail)) return;
-    const response = event.detail;
+    if (!(event instanceof CustomEvent)) return;
+    const response = snapshotResponse(event.detail);
+    if (response === null) return;
     if (response.channel !== channel) return;
     const entry = takePending(response.requestId);
     if (!entry) return;

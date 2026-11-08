@@ -93,9 +93,6 @@ export async function handleBridgeRequest(
   if (!hasOnlyKeys(request, ["channel", "requestId", "operation"]) || !isOperation(operation)) {
     return failure(0, "compatibility");
   }
-  const platformOrigin = operation.platform === "cnb" ? "https://cnb.cool" : "https://github.com";
-  if (activeOrigin !== platformOrigin) return failure(0, "compatibility");
-
   let allowedRequest: ReturnType<typeof buildAllowedRequest>;
   try {
     allowedRequest = buildAllowedRequest(operation);
@@ -103,6 +100,7 @@ export async function handleBridgeRequest(
     if (error instanceof TypeError || error instanceof URIError) return failure(0, "compatibility");
     throw error;
   }
+  if (activeOrigin !== allowedRequest.url.origin) return failure(0, "compatibility");
 
   let response: Response;
   try {
