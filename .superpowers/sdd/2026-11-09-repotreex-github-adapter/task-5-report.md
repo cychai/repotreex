@@ -32,7 +32,7 @@ GREEN focused validation:
 ```text
 npx vitest run tests/page-bridge.test.ts tests/bridge-client.test.ts
 Test Files  2 passed (2)
-Tests       100 passed (100)
+Tests       102 passed (102)
 ```
 
 Full validation:
@@ -40,7 +40,7 @@ Full validation:
 ```text
 npm test
 Test Files  17 passed (17)
-Tests       988 passed (988)
+Tests       990 passed (990)
 
 npm run typecheck
 exit 0

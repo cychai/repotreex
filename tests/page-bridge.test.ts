@@ -140,6 +140,37 @@ describe("page bridge handler", () => {
     });
   });
 
+  it("keeps an oversized result sanitized when stream cancellation fails", async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("x".repeat(2_000_001)));
+      },
+      cancel() {
+        throw new TypeError("private cancel failure");
+      },
+    });
+    fetchMock.mockResolvedValue(htmlResponse(body));
+    await expect(handleBridgeRequest(githubRequest, fetchMock, "https://github.com")).resolves.toEqual({
+      channel: "channel-a", requestId: "request-a", ok: false, status: 200, code: "compatibility",
+    });
+  });
+
+  it("keeps unexpected stream cancellation failures observable", async () => {
+    const failure = new Error("unexpected cancel failure");
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("x".repeat(2_000_001)));
+      },
+      cancel() {
+        throw failure;
+      },
+    });
+    fetchMock.mockResolvedValue(htmlResponse(body));
+    await expect(handleBridgeRequest(githubRequest, fetchMock, "https://github.com")).rejects.toBe(failure);
+  });
+
   it.each([
     [{ platform: "cnb", type: "list-directory", repository: "acme/repo", ref: "release/v1", path: "src/a b" }, "https://cnb.cool/acme/repo/-/git/contents/src/a%20b?ref=release%2Fv1"],
     [{ platform: "cnb", type: "list-branches", repository: "acme/repo", page: -1, pageSize: 500 }, "https://cnb.cool/acme/repo/-/git/branches?page=1&page_size=100"],

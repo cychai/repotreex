@@ -99,7 +99,12 @@ async function readBoundedText(response: Response, maximumBodyUnits: number): Pr
       if (done) break;
       text += decoder.decode(value, { stream: true });
       if (text.length > maximumBodyUnits) {
-        await reader.cancel();
+        try {
+          await reader.cancel();
+        } catch (error) {
+          const code = transportFailure(error);
+          if (code === null) throw error;
+        }
         throw new RepositoryError("compatibility");
       }
     }
