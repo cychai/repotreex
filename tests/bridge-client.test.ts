@@ -162,6 +162,18 @@ describe("bridge client", () => {
     await expect(pending).resolves.toBe("valid");
   });
 
+  it("ignores a revoked response proxy without leaking or settling it", async () => {
+    const client = createClient();
+    const pending = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
+    const envelope = { channel: "channel-a", requestId: requests[0].requestId };
+    const revoked = Proxy.revocable({ ...envelope, ok: true, status: 200, data: "revoked" }, {});
+    revoked.revoke();
+
+    expect(() => respond(revoked.proxy)).not.toThrow();
+    respond({ ...envelope, ok: true, status: 200, data: "valid" });
+    await expect(pending).resolves.toBe("valid");
+  });
+
   it.each([
     [401, "signed-out"], [403, "forbidden"], [404, "not-found"],
     [429, "rate-limited"], [503, "server"], [0, "network"],

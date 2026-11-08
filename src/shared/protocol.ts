@@ -1,6 +1,9 @@
 export const BRIDGE_REQUEST_EVENT = "repotreex:request";
 export const BRIDGE_RESPONSE_EVENT = "repotreex:response";
 export const NAVIGATION_EVENT = "repotreex:navigation";
+export const FORBIDDEN_BRIDGE_CONTROLS = [
+  "method", "url", "origin", "headers", "credentials", "redirect", "maximumBodyUnits",
+] as const;
 
 export type CnbBridgeOperation =
   | { platform: "cnb"; type: "list-directory"; repository: string; ref: string; path: string }

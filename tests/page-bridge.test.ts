@@ -198,10 +198,23 @@ describe("page bridge handler", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("rejects revoked request and operation proxies without leaking or fetching", async () => {
+    const revokedRequest = Proxy.revocable({ ...request }, {});
+    revokedRequest.revoke();
+    await expect(handleBridgeRequest(revokedRequest.proxy, fetchMock)).resolves.toBeNull();
+
+    const revokedOperation = Proxy.revocable({ ...request.operation }, {});
+    revokedOperation.revoke();
+    await expect(handleBridgeRequest({ ...request, operation: revokedOperation.proxy }, fetchMock)).resolves.toEqual({
+      channel: "channel-a", requestId: "request-a", ok: false, status: 0, code: "compatibility",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("rejects non-enumerable, symbol, and inherited caller controls before fetch", async () => {
     const hiddenOperation = Object.defineProperty({ ...request.operation }, "method", { value: "POST" });
     const symbolOperation = { ...request.operation, [Symbol("caller-control")]: "POST" };
-    const inheritedOperations = ["method", "url", "headers", "credentials", "redirect", "maximumBodyUnits"]
+    const inheritedOperations = ["method", "url", "origin", "headers", "credentials", "redirect", "maximumBodyUnits"]
       .map((control) => Object.assign(Object.create({ [control]: "hostile" }), request.operation));
     for (const operation of [hiddenOperation, symbolOperation, ...inheritedOperations]) {
       await expect(handleBridgeRequest({ ...request, operation }, fetchMock)).resolves.toEqual({

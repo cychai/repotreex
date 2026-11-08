@@ -11,7 +11,11 @@ import {
 const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 
 function isRecord(value: unknown): value is object {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  try {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  } catch {
+    return false;
+  }
 }
 
 function hasOnlyKeys(value: object, keys: readonly string[]): boolean {

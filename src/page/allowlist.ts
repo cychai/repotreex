@@ -1,6 +1,6 @@
 import { buildCnbAllowedRequest } from "../platforms/cnb/requests";
 import { buildGitHubAllowedRequest } from "../platforms/github/requests";
-import type { BridgeOperation } from "../shared/protocol";
+import { FORBIDDEN_BRIDGE_CONTROLS, type BridgeOperation } from "../shared/protocol";
 
 export type AllowedRequest = {
   url: URL;
@@ -10,16 +10,13 @@ export type AllowedRequest = {
 
 const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const ownKeys = Reflect.ownKeys;
-const forbiddenControls = [
-  "method", "url", "headers", "credentials", "redirect", "maximumBodyUnits",
-] as const;
 
 function ownPlatform(operation: unknown): unknown {
-  if (typeof operation !== "object" || operation === null || Array.isArray(operation)) {
-    throw new TypeError("Invalid bridge operation");
-  }
   let descriptor: PropertyDescriptor | undefined;
   try {
+    if (typeof operation !== "object" || operation === null || Array.isArray(operation)) {
+      throw new TypeError("Invalid bridge operation");
+    }
     descriptor = getOwnPropertyDescriptor(operation, "platform");
   } catch {
     throw new TypeError("Invalid bridge operation");
@@ -36,7 +33,7 @@ function rejectCallerControls(operation: object): void {
     throw new TypeError("Invalid bridge operation");
   }
   if (keys.some((key) => typeof key === "symbol")) throw new TypeError("Invalid bridge operation");
-  for (const control of forbiddenControls) {
+  for (const control of FORBIDDEN_BRIDGE_CONTROLS) {
     try {
       if (control in operation) throw new TypeError("Invalid bridge operation");
     } catch {

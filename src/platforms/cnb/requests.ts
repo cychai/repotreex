@@ -1,12 +1,9 @@
-import type { CnbBridgeOperation } from "../../shared/protocol";
+import { FORBIDDEN_BRIDGE_CONTROLS, type CnbBridgeOperation } from "../../shared/protocol";
 
 const cnbOrigin = "https://cnb.cool";
 const maximumBodyUnits = 2_000_000;
 const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const ownKeys = Reflect.ownKeys;
-const forbiddenControls = [
-  "method", "url", "headers", "credentials", "redirect", "maximumBodyUnits",
-] as const;
 
 export type CnbAllowedRequest = {
   url: URL;
@@ -15,10 +12,12 @@ export type CnbAllowedRequest = {
 };
 
 function requireRecord(value: unknown): object {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  try {
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) return value;
+  } catch {
     throw new TypeError("Invalid CNB bridge operation");
   }
-  return value;
+  throw new TypeError("Invalid CNB bridge operation");
 }
 
 function ownData(value: object, key: string): unknown {
@@ -42,7 +41,7 @@ function requireExactKeys(value: object, keys: readonly string[]): void {
   if (actualKeys.length !== keys.length || !keys.every((key) => actualKeys.includes(key))) {
     throw new TypeError("Invalid CNB bridge operation");
   }
-  for (const control of forbiddenControls) {
+  for (const control of FORBIDDEN_BRIDGE_CONTROLS) {
     try {
       if (control in value && !Object.hasOwn(value, control)) throw new TypeError("Invalid CNB bridge operation");
     } catch {

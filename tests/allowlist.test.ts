@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildAllowedRequest } from "../src/page/allowlist";
+import { buildCnbAllowedRequest } from "../src/platforms/cnb/requests";
+import { buildGitHubAllowedRequest } from "../src/platforms/github/requests";
 import { classifyHttpError, RepositoryError } from "../src/shared/errors";
 
 describe("buildAllowedRequest", () => {
@@ -266,7 +268,7 @@ describe("buildAllowedRequest", () => {
     expect(() => buildAllowedRequest(symbolOperation as never)).toThrow(TypeError);
   });
 
-  it.each(["method", "url", "headers", "credentials", "redirect", "maximumBodyUnits"])(
+  it.each(["method", "url", "origin", "headers", "credentials", "redirect", "maximumBodyUnits"])(
     "rejects inherited caller control %s without rejecting Object.prototype",
     (control) => {
       const operation = Object.assign(Object.create({ [control]: "hostile" }), {
@@ -278,6 +280,35 @@ describe("buildAllowedRequest", () => {
       })).not.toThrow();
     },
   );
+
+  it("rejects inherited origin in both platform builders", () => {
+    const cnbOperation = Object.assign(Object.create({ origin: "https://evil.example" }), {
+      platform: "cnb" as const, type: "get-head" as const, repository: "acme/repo",
+    });
+    const githubOperation = Object.assign(Object.create({ origin: "https://evil.example" }), {
+      platform: "github" as const, type: "refs-page" as const,
+      repository: "acme/repo", kind: "tags" as const, page: 1,
+    });
+
+    expect(() => buildCnbAllowedRequest(cnbOperation)).toThrow(TypeError);
+    expect(() => buildGitHubAllowedRequest(githubOperation)).toThrow(TypeError);
+  });
+
+  it("normalizes revoked operation proxies at every request builder boundary", () => {
+    const revokedCnb = Proxy.revocable({
+      platform: "cnb" as const, type: "get-head" as const, repository: "acme/repo",
+    }, {});
+    const revokedGitHub = Proxy.revocable({
+      platform: "github" as const, type: "refs-page" as const,
+      repository: "acme/repo", kind: "tags" as const, page: 1,
+    }, {});
+    revokedCnb.revoke();
+    revokedGitHub.revoke();
+
+    expect(() => buildAllowedRequest(revokedCnb.proxy)).toThrow("Invalid bridge operation");
+    expect(() => buildCnbAllowedRequest(revokedCnb.proxy)).toThrow("Invalid CNB bridge operation");
+    expect(() => buildGitHubAllowedRequest(revokedGitHub.proxy)).toThrow("Invalid GitHub bridge operation");
+  });
 });
 
 describe("repository errors", () => {

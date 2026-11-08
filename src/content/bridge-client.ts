@@ -42,10 +42,10 @@ function isErrorCode(value: unknown): value is RepositoryErrorCode {
 }
 
 function snapshotResponse(value: unknown): ValidBridgeResponse | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   let keys: (string | symbol)[];
   const fields = new Map<string, unknown>();
   try {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
     keys = ownKeys(value);
     for (const key of keys) {
       if (typeof key !== "string") return null;
