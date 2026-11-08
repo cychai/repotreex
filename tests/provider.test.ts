@@ -306,7 +306,7 @@ describe("session provider", () => {
       expect(request).toBeDefined();
       if (!request) throw new Error("Expected a synthetic bridge request");
       window.dispatchEvent(new CustomEvent(BRIDGE_RESPONSE_EVENT, {
-        detail: { channel: request.channel, requestId: request.requestId, ok: true, status: 200, data: treeFixture },
+        detail: { channel: request.channel, requestId: request.requestId, ok: true, status: 200, format: "json", data: treeFixture },
       }));
       await expect(promise).rejects.toMatchObject({ code: "cancelled" });
     } finally {

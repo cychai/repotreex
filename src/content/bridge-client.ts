@@ -62,13 +62,22 @@ function snapshotResponse(value: unknown): ValidBridgeResponse | null {
   const ok = fields.get("ok");
   if (typeof channel !== "string" || typeof requestId !== "string" ||
     typeof status !== "number" || !Number.isInteger(status)) return null;
-  const expectedKeys = ok === true
-    ? ["channel", "requestId", "ok", "status", "data"]
-    : ["channel", "requestId", "ok", "status", "code"];
-  if (keys.length !== expectedKeys.length || !expectedKeys.every((key) => fields.has(key))) return null;
   if (ok === true && status >= 200 && status <= 299) {
-    return { channel, requestId, ok, status, data: fields.get("data") };
+    const format = fields.get("format");
+    const payloadKey = format === "json" ? "data" : format === "text" ? "text" : null;
+    const expectedKeys = payloadKey === null
+      ? []
+      : ["channel", "requestId", "ok", "status", "format", payloadKey];
+    if (keys.length !== expectedKeys.length || !expectedKeys.every((key) => fields.has(key))) return null;
+    if (payloadKey === null) return null;
+    const payload = fields.get(payloadKey);
+    if (format === "text" && typeof payload !== "string") return null;
+    return format === "json"
+      ? { channel, requestId, ok, status, format, data: payload }
+      : { channel, requestId, ok, status, format: "text", text: payload as string };
   }
+  const expectedKeys = ["channel", "requestId", "ok", "status", "code"];
+  if (keys.length !== expectedKeys.length || !expectedKeys.every((key) => fields.has(key))) return null;
   const code = fields.get("code");
   return ok === false && status >= 0 && status <= 599 && isErrorCode(code)
     ? { channel, requestId, ok, status, code }
@@ -98,7 +107,7 @@ export function createBridgeClient(
     if (response.channel !== channel) return;
     const entry = takePending(response.requestId);
     if (!entry) return;
-    if (response.ok) entry.resolve(response.data);
+    if (response.ok) entry.resolve(response.format === "json" ? response.data : response.text);
     else entry.reject(new RepositoryError(response.code, { status: response.status }));
   };
   targetWindow.addEventListener(BRIDGE_RESPONSE_EVENT, onResponse);

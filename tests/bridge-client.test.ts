@@ -52,8 +52,8 @@ describe("bridge client", () => {
     });
     expect(requests[0].requestId).not.toBe(requests[1].requestId);
     respond({ ...requests[1], operation: undefined }); // Malformed, not a response.
-    respond({ channel: "channel-a", requestId: requests[1].requestId, ok: true, status: 200, data: ["v1"] });
-    respond({ channel: "channel-a", requestId: requests[0].requestId, ok: true, status: 200, data: { name: "main" } });
+    respond({ channel: "channel-a", requestId: requests[1].requestId, ok: true, status: 200, format: "json", data: ["v1"] });
+    respond({ channel: "channel-a", requestId: requests[0].requestId, ok: true, status: 200, format: "json", data: { name: "main" } });
     await expect(second).resolves.toEqual(["v1"]);
     await expect(first).resolves.toEqual({ name: "main" });
   });
@@ -73,16 +73,31 @@ describe("bridge client", () => {
     });
     respond({
       channel: "channel-a", requestId: requests[0].requestId,
-      ok: true, status: 200, data: "provisional",
+      ok: true, status: 200, format: "text", text: "provisional",
     });
     await expect(pending).resolves.toBe("provisional");
+  });
+
+  it("keeps text and JSON successes discriminated and ignores malformed format payloads", async () => {
+    const client = createClient();
+    const pending = client.request<string>({
+      platform: "github", type: "repository-page", repository: "acme/repo",
+      ref: null, path: "", view: "root",
+    });
+    const envelope = { channel: "channel-a", requestId: requests[0].requestId, ok: true, status: 200 };
+    respond({ ...envelope, format: "text", text: 7 });
+    respond({ ...envelope, format: "text", data: "wrong key" });
+    respond({ ...envelope, format: "json", text: "wrong key" });
+    respond({ ...envelope, format: "unknown", data: "wrong format" });
+    respond({ ...envelope, format: "text", text: "<html></html>" });
+    await expect(pending).resolves.toBe("<html></html>");
   });
 
   it("ignores a different channel even when the request ID matches", async () => {
     const client = createClient("channel-a", 20);
     const pending = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
     const rejection = expect(pending).rejects.toMatchObject({ code: "network" });
-    respond({ channel: "channel-b", requestId: requests[0].requestId, ok: true, status: 200, data: {} });
+    respond({ channel: "channel-b", requestId: requests[0].requestId, ok: true, status: 200, format: "json", data: {} });
     await vi.advanceTimersByTimeAsync(20);
     await rejection;
   });
@@ -90,8 +105,8 @@ describe("bridge client", () => {
   it("ignores unknown IDs and duplicate or late responses", async () => {
     const client = createClient();
     const first = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
-    respond({ channel: "channel-a", requestId: "unknown", ok: true, status: 200, data: "wrong" });
-    const response = { channel: "channel-a", requestId: requests[0].requestId, ok: true, status: 200, data: "first" };
+    respond({ channel: "channel-a", requestId: "unknown", ok: true, status: 200, format: "json", data: "wrong" });
+    const response = { channel: "channel-a", requestId: requests[0].requestId, ok: true, status: 200, format: "json", data: "first" };
     respond(response);
     await expect(first).resolves.toBe("first");
     const second = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
@@ -107,6 +122,7 @@ describe("bridge client", () => {
     { ok: true, status: 401, data: {} },
     { ok: true, status: 200.5, data: {} },
     { ok: true, status: 200 },
+    { ok: true, status: 200, format: "json", data: {}, text: "extra" },
     { ok: false, status: 401, code: "unknown" },
     { ok: false, status: -1, code: "network" },
     { ok: false, status: 600, code: "network" },
@@ -116,7 +132,7 @@ describe("bridge client", () => {
     const pending = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
     const envelope = { channel: "channel-a", requestId: requests[0].requestId };
     respond(fields && !Array.isArray(fields) ? { ...envelope, ...fields } : fields);
-    respond({ ...envelope, ok: true, status: 200, data: "valid" });
+    respond({ ...envelope, ok: true, status: 200, format: "json", data: "valid" });
     await expect(pending).resolves.toBe("valid");
   });
 
@@ -124,17 +140,17 @@ describe("bridge client", () => {
     const client = createClient();
     const pending = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
     const envelope = { channel: "channel-a", requestId: requests[0].requestId };
-    respond(Object.create({ ...envelope, ok: true, status: 200, data: "inherited" }));
+    respond(Object.create({ ...envelope, ok: true, status: 200, format: "json", data: "inherited" }));
     let reads = 0;
     const accessor = Object.defineProperty({
-      requestId: envelope.requestId, ok: true, status: 200, data: "accessor",
+      requestId: envelope.requestId, ok: true, status: 200, format: "json", data: "accessor",
     }, "channel", {
       enumerable: true,
       get() { reads++; return "channel-a"; },
     });
     respond(accessor);
     expect(reads).toBe(0);
-    respond({ ...envelope, ok: true, status: 200, data: "valid" });
+    respond({ ...envelope, ok: true, status: 200, format: "json", data: "valid" });
     await expect(pending).resolves.toBe("valid");
   });
 
@@ -158,7 +174,7 @@ describe("bridge client", () => {
     respond(accessor);
     expect(traps).toBeGreaterThan(0);
     expect(dataReads).toBe(0);
-    respond({ ...envelope, data: "valid" });
+    respond({ ...envelope, format: "json", data: "valid" });
     await expect(pending).resolves.toBe("valid");
   });
 
@@ -166,11 +182,11 @@ describe("bridge client", () => {
     const client = createClient();
     const pending = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
     const envelope = { channel: "channel-a", requestId: requests[0].requestId };
-    const revoked = Proxy.revocable({ ...envelope, ok: true, status: 200, data: "revoked" }, {});
+    const revoked = Proxy.revocable({ ...envelope, ok: true, status: 200, format: "json", data: "revoked" }, {});
     revoked.revoke();
 
     expect(() => respond(revoked.proxy)).not.toThrow();
-    respond({ ...envelope, ok: true, status: 200, data: "valid" });
+    respond({ ...envelope, ok: true, status: 200, format: "json", data: "valid" });
     await expect(pending).resolves.toBe("valid");
   });
 
@@ -190,7 +206,7 @@ describe("bridge client", () => {
     const listener = (event: Event) => {
       if (!(event instanceof CustomEvent)) return;
       const request: BridgeRequest = event.detail;
-      respond({ channel: request.channel, requestId: request.requestId, ok: true, status: 200, data: null });
+      respond({ channel: request.channel, requestId: request.requestId, ok: true, status: 200, format: "json", data: null });
     };
     window.addEventListener("repotreex:request", listener, { once: true });
     await expect(createClient().request({ platform: "cnb", type: "get-head", repository: "acme/repo" })).resolves.toBeNull();
@@ -214,8 +230,8 @@ describe("bridge client", () => {
     controller.abort("private reason");
     await rejection;
     expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
-    respond({ channel: "channel-a", requestId: requests[0].requestId, ok: true, status: 200, data: "late" });
-    respond({ channel: "channel-a", requestId: requests[1].requestId, ok: true, status: 200, data: "other" });
+    respond({ channel: "channel-a", requestId: requests[0].requestId, ok: true, status: 200, format: "json", data: "late" });
+    respond({ channel: "channel-a", requestId: requests[1].requestId, ok: true, status: 200, format: "json", data: "other" });
     await expect(other).resolves.toBe("other");
   });
 
@@ -224,7 +240,7 @@ describe("bridge client", () => {
     const remove = vi.spyOn(controller.signal, "removeEventListener");
     const client = createClient("channel-a", 20);
     const success = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" }, { signal: controller.signal });
-    respond({ channel: "channel-a", requestId: requests[0].requestId, ok: true, status: 200, data: {} });
+    respond({ channel: "channel-a", requestId: requests[0].requestId, ok: true, status: 200, format: "json", data: {} });
     await success;
     const timeout = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" }, { signal: controller.signal });
     const rejection = expect(timeout).rejects.toMatchObject({ code: "network" });
@@ -250,7 +266,7 @@ describe("bridge client", () => {
     const rejection = expect(first).rejects.toMatchObject({ code: "cancelled" });
     firstClient.dispose();
     await rejection;
-    respond({ channel: "second", requestId: requests[1].requestId, ok: true, status: 200, data: "second" });
+    respond({ channel: "second", requestId: requests[1].requestId, ok: true, status: 200, format: "json", data: "second" });
     await expect(second).resolves.toBe("second");
   });
 

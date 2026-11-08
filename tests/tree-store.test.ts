@@ -885,7 +885,7 @@ describe("tree store", () => {
       store.dispose();
       await cancelled;
       window.dispatchEvent(new CustomEvent(BRIDGE_RESPONSE_EVENT, { detail: {
-        channel: request?.channel, requestId: request?.requestId, ok: true, status: 200, data: treeFixture,
+        channel: request?.channel, requestId: request?.requestId, ok: true, status: 200, format: "json", data: treeFixture,
       } }));
       expectCleared(store);
     } finally {
@@ -903,7 +903,7 @@ describe("tree store", () => {
       if (request.channel !== channel || request.operation.type !== "list-directory") return;
       window.dispatchEvent(new CustomEvent(BRIDGE_RESPONSE_EVENT, { detail: request.operation.path === "" ? {
         channel, requestId: request.requestId, ok: true, status: 200,
-        data: { ...treeFixture, path: "", name: "", entries: [
+        format: "json", data: { ...treeFixture, path: "", name: "", entries: [
           { type: "tree", name: "src", path: "src", sha: "src-sha" },
         ] },
       } : {

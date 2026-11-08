@@ -1,5 +1,5 @@
 import { buildAllowedRequest } from "./allowlist";
-import { classifyHttpError, type RepositoryErrorCode } from "../shared/errors";
+import { classifyHttpError, RepositoryError, type RepositoryErrorCode } from "../shared/errors";
 import {
   BRIDGE_REQUEST_EVENT,
   BRIDGE_RESPONSE_EVENT,
@@ -79,6 +79,38 @@ function transportFailure(error: unknown): RepositoryErrorCode | null {
   return error instanceof TypeError ? "network" : null;
 }
 
+function expectedContentType(accept: "json" | "html"): string {
+  return accept === "json" ? "application/json" : "text/html";
+}
+
+async function readBoundedText(response: Response, maximumBodyUnits: number): Promise<string> {
+  if (!response.body) {
+    const text = await response.text();
+    if (text.length > maximumBodyUnits) throw new RepositoryError("compatibility");
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+      if (text.length > maximumBodyUnits) {
+        await reader.cancel();
+        throw new RepositoryError("compatibility");
+      }
+    }
+    text += decoder.decode();
+    if (text.length > maximumBodyUnits) throw new RepositoryError("compatibility");
+    return text;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export async function handleBridgeRequest(
   request: unknown,
   fetchImpl: typeof fetch,
@@ -111,8 +143,9 @@ export async function handleBridgeRequest(
     response = await fetchImpl(allowedRequest.url.href, {
       method: "GET",
       credentials: "include",
-      headers: { Accept: "application/json" },
+      headers: { Accept: expectedContentType(allowedRequest.accept) },
       cache: "no-store",
+      redirect: "follow",
     });
   } catch (error) {
     const code = transportFailure(error);
@@ -120,11 +153,25 @@ export async function handleBridgeRequest(
     throw error;
   }
   if (!response.ok) return failure(response.status, classifyHttpError(response.status).code);
+  let responseOrigin: string;
+  try {
+    responseOrigin = new URL(response.url).origin;
+  } catch {
+    return failure(response.status, "compatibility");
+  }
+  if (responseOrigin !== activeOrigin) return failure(response.status, "compatibility");
+  if (response.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !==
+    expectedContentType(allowedRequest.accept)) return failure(response.status, "compatibility");
 
   try {
-    const data: unknown = await response.json();
-    return { channel, requestId, ok: true, status: response.status, data };
+    const text = await readBoundedText(response, allowedRequest.maximumBodyUnits);
+    if (allowedRequest.accept === "html") {
+      return { channel, requestId, ok: true, status: response.status, format: "text", text };
+    }
+    const data: unknown = JSON.parse(text);
+    return { channel, requestId, ok: true, status: response.status, format: "json", data };
   } catch (error) {
+    if (error instanceof RepositoryError) return failure(response.status, error.code);
     if (error instanceof SyntaxError) return failure(response.status, "compatibility");
     const code = transportFailure(error);
     if (code !== null) return failure(response.status, code);
@@ -134,7 +181,9 @@ export async function handleBridgeRequest(
 
 function installBridge(): void {
   const installed = Symbol.for("repotreex.pageBridge");
-  if (window.location.origin !== "https://cnb.cool" || Object.hasOwn(window, installed)) return;
+  const activeOrigin = window.location.origin;
+  if ((activeOrigin !== "https://cnb.cool" && activeOrigin !== "https://github.com") ||
+    Object.hasOwn(window, installed)) return;
 
   const emitNavigation = () => window.dispatchEvent(new CustomEvent(NAVIGATION_EVENT));
   for (const method of ["pushState", "replaceState"] as const) {
@@ -159,7 +208,7 @@ function installBridge(): void {
 
   window.addEventListener(BRIDGE_REQUEST_EVENT, (event) => {
     if (!(event instanceof CustomEvent)) return;
-    void handleBridgeRequest(event.detail, window.fetch.bind(window)).then((response) => {
+    void handleBridgeRequest(event.detail, window.fetch.bind(window), activeOrigin).then((response) => {
       if (response !== null) window.dispatchEvent(new CustomEvent(BRIDGE_RESPONSE_EVENT, { detail: response }));
     });
   });

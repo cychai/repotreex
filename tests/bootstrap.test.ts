@@ -22,7 +22,7 @@ function setup(ready = true, development = false) {
       : type === "list-branches" ? [{ name: "main", sha: "synthetic" }, { name: "release/v1", sha: "synthetic" }]
       : type === "list-tags" ? []
       : { type: "tree", name: "", path: "", sha: "synthetic", size: 0, entries: [{ type: "blob", path: "a.ts", name: "a.ts", sha: "synthetic" }] };
-    target.dispatchEvent(new CustomEvent(BRIDGE_RESPONSE_EVENT, { detail: { channel: request.channel, requestId: request.requestId, ok: true, status: 200, data } }));
+    target.dispatchEvent(new CustomEvent(BRIDGE_RESPONSE_EVENT, { detail: { channel: request.channel, requestId: request.requestId, ok: true, status: 200, format: "json", data } }));
   };
   target.addEventListener(BRIDGE_REQUEST_EVENT, respond);
   const options = { storage, development, isContextValid: () => valid };

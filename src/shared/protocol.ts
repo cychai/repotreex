@@ -42,7 +42,8 @@ export type BridgeRequest = {
 };
 
 export type BridgeResponse =
-  | { channel: string; requestId: string; ok: true; status: number; data: unknown }
+  | { channel: string; requestId: string; ok: true; status: number; format: "json"; data: unknown }
+  | { channel: string; requestId: string; ok: true; status: number; format: "text"; text: string }
   | { channel: string; requestId: string; ok: false; status: number; code: string };
 
 export type TreeEntryType = "tree" | "blob" | "link" | "submodule";
