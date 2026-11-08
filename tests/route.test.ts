@@ -1,45 +1,54 @@
 import { describe, expect, it } from "vitest";
-import { buildBlobUrl, parseCnbRoute } from "../src/shared/route";
+import {
+  buildCnbFileUrl, buildCnbRefRootUrl, parseCnbRoute, reconcileCnbRoute,
+} from "../src/platforms/cnb/route";
+import { cnbAdapter } from "../src/platforms/cnb";
 
 describe("parseCnbRoute", () => {
   it("parses a nested repository root without assuming owner/repo", () => {
     expect(parseCnbRoute(new URL("https://cnb.cool/acme/platform/web"))).toMatchObject({
-      kind: "repository",
-      repo: "acme/platform/web",
+      platform: "cnb",
+      view: "root",
+      repository: "acme/platform/web",
       ref: null,
-      filePath: null,
+      path: null,
     });
   });
 
   it("parses a blob route when route state supplies the ref boundary", () => {
     const url = new URL("https://cnb.cool/acme/platform/web/-/blob/main/src/a%20b.ts");
     expect(parseCnbRoute(url, { knownRef: "main" })).toMatchObject({
-      kind: "blob",
-      repo: "acme/platform/web",
+      platform: "cnb",
+      view: "blob",
+      repository: "acme/platform/web",
       ref: "main",
-      filePath: "src/a b.ts",
+      path: "src/a b.ts",
     });
   });
 
   it("uses a matching slash ref hint as the blob ref boundary", () => {
     const url = new URL("https://cnb.cool/acme/platform/web/-/blob/release/v1/src/index.ts");
     expect(parseCnbRoute(url, { knownRef: "release/v1" })).toEqual({
-      kind: "blob",
-      repo: "acme/platform/web",
+      platform: "cnb",
+      view: "blob",
+      repository: "acme/platform/web",
       ref: "release/v1",
-      filePath: "src/index.ts",
+      path: "src/index.ts",
     });
   });
 
   it("round-trips a canonical encoded slash ref only with matching route evidence", () => {
-    const route = { kind: "repository", repo: "acme/platform/web", ref: null, filePath: null } as const;
-    const url = buildBlobUrl(route, "release/v1", "src/index.ts");
+    const route = {
+      platform: "cnb", view: "root", repository: "acme/platform/web", ref: null, path: null,
+    } as const;
+    const url = buildCnbFileUrl(route, "release/v1", "src/index.ts");
 
     expect(parseCnbRoute(url, { knownRef: "release/v1" })).toEqual({
-      kind: "blob",
-      repo: "acme/platform/web",
+      platform: "cnb",
+      view: "blob",
+      repository: "acme/platform/web",
       ref: "release/v1",
-      filePath: "src/index.ts",
+      path: "src/index.ts",
     });
     expect(parseCnbRoute(url)).toEqual({ kind: "unsupported" });
     expect(parseCnbRoute(url, { knownRef: "release/../v1" })).toEqual({ kind: "unsupported" });
@@ -53,19 +62,21 @@ describe("parseCnbRoute", () => {
   it("parses the first blob segment as a provisional ref without a matching hint", () => {
     const url = new URL("https://cnb.cool/acme/platform/web/-/blob/release/v1/src/index.ts");
     expect(parseCnbRoute(url, { knownRef: "main" })).toEqual({
-      kind: "blob",
-      repo: "acme/platform/web",
+      platform: "cnb",
+      view: "blob",
+      repository: "acme/platform/web",
       ref: "release",
-      filePath: "v1/src/index.ts",
+      path: "v1/src/index.ts",
     });
   });
 
   it("parses commit routes without treating the commit as a file ref", () => {
     expect(parseCnbRoute(new URL("https://cnb.cool/acme/platform/web/-/commit/abc123"))).toEqual({
-      kind: "commit",
-      repo: "acme/platform/web",
+      platform: "cnb",
+      view: "root",
+      repository: "acme/platform/web",
       ref: null,
-      filePath: null,
+      path: null,
     });
   });
 
@@ -138,27 +149,32 @@ describe("parseCnbRoute", () => {
   });
 });
 
-describe("buildBlobUrl", () => {
-  it("encodes each ref and path segment", () => {
-    const route = { kind: "repository", repo: "acme/platform/web", ref: null, filePath: null } as const;
-    expect(buildBlobUrl(route, "release/v1", "src/a b.ts").href).toBe(
+describe("buildCnbFileUrl", () => {
+  it("builds the same canonical encoded CNB file URL", () => {
+    const route = {
+      platform: "cnb", view: "root", repository: "acme/platform/web", ref: null, path: null,
+    } as const;
+    expect(buildCnbFileUrl(route, "release/v1", "src/a b.ts").href).toBe(
       "https://cnb.cool/acme/platform/web/-/blob/release%2Fv1/src/a%20b.ts",
     );
   });
 
   it("reserves the dash marker only in repository segments", () => {
-    const route = { kind: "repository", repo: "acme/repo", ref: null, filePath: null } as const;
-    expect(buildBlobUrl(route, "release/-/v1", "src/-/a.ts").href).toBe(
+    const route = {
+      platform: "cnb", view: "root", repository: "acme/repo", ref: null, path: null,
+    } as const;
+    expect(buildCnbFileUrl(route, "release/-/v1", "src/-/a.ts").href).toBe(
       "https://cnb.cool/acme/repo/-/blob/release%2F-%2Fv1/src/-/a.ts",
     );
   });
 
   it("rejects unsafe repository, ref, and path inputs", () => {
     const validRoute = {
-      kind: "repository",
-      repo: "acme/platform/web",
+      platform: "cnb",
+      view: "root",
+      repository: "acme/platform/web",
       ref: null,
-      filePath: null,
+      path: null,
     } as const;
     const invalidRepositories = [
       "",
@@ -194,13 +210,43 @@ describe("buildBlobUrl", () => {
     ];
 
     for (const repo of invalidRepositories) {
-      expect(() => buildBlobUrl({ ...validRoute, repo }, "main", "src/a.ts")).toThrow(TypeError);
+      expect(() => buildCnbFileUrl({ ...validRoute, repository: repo }, "main", "src/a.ts"))
+        .toThrow(TypeError);
     }
     for (const ref of invalidRefs) {
-      expect(() => buildBlobUrl(validRoute, ref, "src/a.ts")).toThrow(TypeError);
+      expect(() => buildCnbFileUrl(validRoute, ref, "src/a.ts")).toThrow(TypeError);
     }
     for (const path of invalidPaths) {
-      expect(() => buildBlobUrl(validRoute, "main", path)).toThrow(TypeError);
+      expect(() => buildCnbFileUrl(validRoute, "main", path)).toThrow(TypeError);
     }
+  });
+});
+
+describe("reconcileCnbRoute", () => {
+  it("uses the longest discovered CNB ref", () => {
+    const refs = [{ kind: "branch" as const, name: "release/v1", sha: "synthetic" }];
+    expect(reconcileCnbRoute(
+      new URL("https://cnb.cool/acme/repo/-/blob/release/v1/src/a.ts"), refs, "main",
+    )).toMatchObject({ ref: "release/v1", path: "src/a.ts" });
+  });
+});
+
+describe("cnbAdapter", () => {
+  it("binds the exact CNB origin and route/provider/layout contracts", () => {
+    expect(cnbAdapter).toMatchObject({ id: "cnb", origin: "https://cnb.cool" });
+    expect(cnbAdapter.layout.platform).toBe("cnb");
+    expect(cnbAdapter.parseRoute).toBe(parseCnbRoute);
+    expect(cnbAdapter.reconcileRoute).toBe(reconcileCnbRoute);
+    expect(cnbAdapter.buildFileUrl).toBe(buildCnbFileUrl);
+    expect(cnbAdapter.buildRefRootUrl).toBe(buildCnbRefRootUrl);
+  });
+
+  it("builds a canonical encoded CNB ref root URL", () => {
+    const route = {
+      platform: "cnb", view: "root", repository: "acme/platform/web", ref: null, path: null,
+    } as const;
+    expect(buildCnbRefRootUrl(route, "release/v1").href).toBe(
+      "https://cnb.cool/acme/platform/web/-/blob/release%2Fv1",
+    );
   });
 });

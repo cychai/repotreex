@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBridgeClient, type BridgeClient } from "../src/content/bridge-client";
-import { createSessionProvider, type RepositoryProvider } from "../src/content/provider";
+import type { RepositoryProvider } from "../src/content/provider";
+import { createCnbProvider } from "../src/platforms/cnb/provider";
 import { RepositoryError } from "../src/shared/errors";
 import { BRIDGE_REQUEST_EVENT, BRIDGE_RESPONSE_EVENT, type BridgeRequest } from "../src/shared/protocol";
 import {
@@ -10,7 +11,7 @@ import {
 function providerFor(data: unknown) {
   const request = vi.fn().mockResolvedValue(data);
   const dispose = vi.fn();
-  return { provider: createSessionProvider({ request, dispose }), request, dispose };
+  return { provider: createCnbProvider({ request, dispose }), request, dispose };
 }
 
 async function expectCompatibility(promise: Promise<unknown>) {
@@ -75,7 +76,7 @@ describe("session provider", () => {
         { ...branchFixture, protected: true, locked: false },
         { name: "release/v1", commit: { sha: "release-sha" }, protected: false, locked: false },
       ]);
-    const provider = createSessionProvider({ request, dispose: vi.fn() });
+    const provider = createCnbProvider({ request, dispose: vi.fn() });
 
     await expect(provider.getHead("acme/repo")).resolves.toBe("main");
     await expect(provider.listBranches("acme/repo")).resolves.toEqual([
@@ -149,7 +150,7 @@ describe("session provider", () => {
       const request = vi.fn().mockResolvedValueOnce(page).mockResolvedValueOnce(page).mockResolvedValueOnce([
         { name: "ref-050", sha: "duplicate-sha" }, { name: "aaa", sha: "aaa-sha" }, { name: "zzz", sha: "zzz-sha" },
       ]);
-      const provider = createSessionProvider({ request, dispose: vi.fn() });
+      const provider = createCnbProvider({ request, dispose: vi.fn() });
       const result = await provider[method]("acme/repo");
       expect(result).toHaveLength(102);
       expect(result[0]).toEqual({ kind, name: "aaa", sha: "aaa-sha" });
@@ -165,7 +166,7 @@ describe("session provider", () => {
 
     it(`${method} requests an empty terminal page after an exact multiple of 100`, async () => {
       const request = vi.fn().mockResolvedValueOnce(refPageFixture()).mockResolvedValueOnce([]);
-      const result = await createSessionProvider({ request, dispose: vi.fn() })[method]("acme/repo");
+      const result = await createCnbProvider({ request, dispose: vi.fn() })[method]("acme/repo");
       expect(result).toHaveLength(100);
       expect(request).toHaveBeenCalledTimes(2);
     });
@@ -203,7 +204,7 @@ describe("session provider", () => {
 
     it(`${method} validates duplicate records instead of skipping malformed duplicates`, async () => {
       const request = vi.fn().mockResolvedValueOnce(refPageFixture()).mockResolvedValueOnce([{ name: "ref-000" }]);
-      await expectCompatibility(createSessionProvider({ request, dispose: vi.fn() })[method]("acme/repo"));
+      await expectCompatibility(createCnbProvider({ request, dispose: vi.fn() })[method]("acme/repo"));
       expect(request).toHaveBeenCalledTimes(2);
     });
 
@@ -227,7 +228,7 @@ describe("session provider", () => {
         controller.abort("synthetic reason");
         return refPageFixture();
       });
-      const promise = createSessionProvider({ request, dispose: vi.fn() })[method]("acme/repo", controller.signal);
+      const promise = createCnbProvider({ request, dispose: vi.fn() })[method]("acme/repo", controller.signal);
       await expect(promise).rejects.toMatchObject({ code: "cancelled", message: "cancelled" });
       expect(request).toHaveBeenCalledExactlyOnceWith({ type, repo: "acme/repo", page: 1, pageSize: 100 }, { signal: controller.signal });
     });
@@ -235,7 +236,7 @@ describe("session provider", () => {
     it(`${method} propagates a later page failure without returning partial refs`, async () => {
       const error = new RepositoryError("rate-limited", { status: 429, retryAfter: 30 });
       const request = vi.fn().mockResolvedValueOnce(refPageFixture()).mockRejectedValueOnce(error);
-      await expect(createSessionProvider({ request, dispose: vi.fn() })[method]("acme/repo")).rejects.toBe(error);
+      await expect(createCnbProvider({ request, dispose: vi.fn() })[method]("acme/repo")).rejects.toBe(error);
     });
   }
 
@@ -251,7 +252,7 @@ describe("session provider", () => {
 
   it("does not retain ref responses between calls or forward additional fields", async () => {
     const request = vi.fn().mockResolvedValueOnce([{ ...refFixture, extra: "synthetic-extra" }]).mockResolvedValueOnce([]);
-    const provider = createSessionProvider({ request, dispose: vi.fn() });
+    const provider = createCnbProvider({ request, dispose: vi.fn() });
     await expect(provider.listBranches("acme/repo")).resolves.toEqual([{ kind: "branch", name: "main", sha: "head-sha" }]);
     await expect(provider.listBranches("acme/repo")).resolves.toEqual([]);
     expect(request.mock.calls.map(([operation]) => operation.page)).toEqual([1, 1]);
@@ -284,7 +285,7 @@ describe("session provider", () => {
 
   it.each(calls)("cancels in-flight $label through the real typed bridge and ignores late responses", async ({ run }) => {
     const client = createBridgeClient(window, "synthetic-channel");
-    const provider = createSessionProvider(client);
+    const provider = createCnbProvider(client);
     const controller = new AbortController();
     let request: BridgeRequest | undefined;
     const listener = (event: Event) => {
@@ -311,7 +312,7 @@ describe("session provider", () => {
   it.each(calls)("propagates client errors unchanged for $label", async ({ run }) => {
     const error = new RepositoryError("forbidden", { status: 403 });
     const request = vi.fn().mockRejectedValue(error);
-    await expect(run(createSessionProvider({ request, dispose: vi.fn() }))).rejects.toBe(error);
+    await expect(run(createCnbProvider({ request, dispose: vi.fn() }))).rejects.toBe(error);
   });
 
   it("disposes the client exactly once and prevents provider reuse", async () => {
@@ -340,7 +341,7 @@ describe("session provider", () => {
 
   it("disposal cancels pending work through the real bridge", async () => {
     const client: BridgeClient = createBridgeClient(window, "synthetic-channel");
-    const provider = createSessionProvider(client);
+    const provider = createCnbProvider(client);
     const promise = provider.getHead("acme/repo");
     const rejection = expect(promise).rejects.toMatchObject({ code: "cancelled" });
     provider.dispose();
