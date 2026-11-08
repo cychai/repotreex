@@ -50,6 +50,18 @@ describe("parseGitHubRoute", () => {
     )).toMatchObject({ ref: "release", path: "v1/src" });
   });
 
+  it("documents that URL normalization makes directly encoded dot segments unobservable", () => {
+    const url = new URL(
+      "https://github.com/acme/repo/blob/main/src/%2e%2e/secret.ts",
+    );
+
+    expect(url.pathname).toBe("/acme/repo/blob/main/secret.ts");
+    expect(parseGitHubRoute(url)).toMatchObject({
+      ref: "main",
+      path: "secret.ts",
+    });
+  });
+
   it.each([
     "issues", "pulls", "actions", "projects", "wiki", "security", "pulse", "graphs",
     "settings", "releases", "commits", "branches", "tags", "network", "stargazers",
@@ -83,9 +95,13 @@ describe("parseGitHubRoute", () => {
     "https://github.com/acme/repo/blob/main/src/%00a.ts",
     "https://github.com/acme/repo/blob/main/src/%C2%85a.ts",
     "https://github.com/%252e%252e/repo",
+    "https://github.com/%252E%252E/repo",
     "https://github.com/acme/%252e",
+    "https://github.com/acme/%252E",
     "https://github.com/acme/repo/blob/main/%252e/a.ts",
+    "https://github.com/acme/repo/blob/main/%252E/a.ts",
     "https://github.com/acme/repo/blob/main/src/%252e%252e/a.ts",
+    "https://github.com/acme/repo/blob/main/src/%252E%252E/a.ts",
     "https://github.com/acme/repo%ZZ",
     "https://github.com/acme/repo/blob/main/file%ZZ.ts",
   ])("rejects an unsafe encoded boundary %s", (href) => {
@@ -159,6 +175,12 @@ describe("GitHub native URL builders", () => {
       ref: "release%2Fv1",
       path: "docs/100%.md",
     });
+  });
+
+  it.each([".", ".."])('rejects the decoded dot segment "%s" in semantic inputs', (segment) => {
+    expect(() => buildGitHubFileUrl(route, segment, "src/app.ts")).toThrow(TypeError);
+    expect(() => buildGitHubFileUrl(route, "main", `src/${segment}/app.ts`)).toThrow(TypeError);
+    expect(() => buildGitHubRefRootUrl(route, `release/${segment}/next`)).toThrow(TypeError);
   });
 
   it("rejects the wrong platform and unsafe repository, ref, or path values", () => {

@@ -16,6 +16,8 @@ function unsupported(): UnsupportedRoute {
 }
 
 function encodedPathSegments(pathname: string): string[] | null {
+  // URL construction removes directly encoded dot segments before this raw-path boundary.
+  // Reject surviving encoded forms here; pre-normalization checks require a separate raw-string API.
   const segments = pathname.split("/").slice(1);
   if (segments.at(-1) === "") segments.pop();
   return segments.some((segment) => segment.length === 0) ? null : segments;
