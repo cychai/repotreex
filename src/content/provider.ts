@@ -1,9 +1,3 @@
-import { RepositoryError } from "../shared/errors";
-import type {
-  BridgeOperation, TreeContent, TreeEntry, TreeEntryType,
-} from "../shared/protocol";
-import type { BridgeClient } from "./bridge-client";
-
 export type EntryKind = "directory" | "file" | "link" | "submodule";
 export type RepositoryEntry = { kind: EntryKind; name: string; path: string; sha: string };
 export type DirectoryListing = { path: string; sha: string; entries: RepositoryEntry[] };
@@ -16,6 +10,12 @@ export interface RepositoryProvider {
   listTags(repo: string, signal?: AbortSignal): Promise<RefOption[]>;
   dispose(): void;
 }
+
+import { RepositoryError } from "../shared/errors";
+import type {
+  BridgeOperation, TreeContent, TreeEntry, TreeEntryType,
+} from "../shared/protocol";
+import type { BridgeClient } from "./bridge-client";
 
 const entryKinds: Record<TreeEntryType, EntryKind> = {
   tree: "directory", blob: "file", link: "link", submodule: "submodule",
