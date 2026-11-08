@@ -156,6 +156,16 @@ describe("page bridge handler", () => {
     });
   });
 
+  it("keeps an oversized fallback sanitized without returning a prefix", async () => {
+    const response = htmlResponse("unused");
+    Object.defineProperty(response, "body", { value: null });
+    vi.spyOn(response, "text").mockResolvedValue("x".repeat(2_000_001));
+    fetchMock.mockResolvedValue(response);
+    await expect(handleBridgeRequest(githubRequest, fetchMock, "https://github.com")).resolves.toEqual({
+      channel: "channel-a", requestId: "request-a", ok: false, status: 200, code: "compatibility",
+    });
+  });
+
   it("keeps unexpected stream cancellation failures observable", async () => {
     const failure = new Error("unexpected cancel failure");
     const encoder = new TextEncoder();
@@ -225,10 +235,68 @@ describe("page bridge handler", () => {
   it.each([
     [new TypeError("private body"), "network"],
     [new DOMException("private abort reason", "AbortError"), "cancelled"],
+    [new DOMException("private network reason", "NetworkError"), "network"],
   ])("sanitizes known body-read failure %#", async (error, code) => {
     const response = htmlResponse("{}");
     vi.spyOn(response, "text").mockRejectedValue(error);
     Object.defineProperty(response, "body", { value: null });
+    fetchMock.mockResolvedValue(response);
+    await expect(handleBridgeRequest(githubRequest, fetchMock, "https://github.com")).resolves.toEqual({
+      channel: "channel-a", requestId: "request-a", ok: false, status: 200, code,
+    });
+  });
+
+  it("does not classify a GitHub fallback SyntaxError as malformed JSON", async () => {
+    const error = new SyntaxError("unexpected text fallback failure");
+    const response = htmlResponse("{}");
+    vi.spyOn(response, "text").mockRejectedValue(error);
+    Object.defineProperty(response, "body", { value: null });
+    fetchMock.mockResolvedValue(response);
+    await expect(handleBridgeRequest(githubRequest, fetchMock, "https://github.com")).rejects.toBe(error);
+  });
+
+  it("keeps unexpected Error and RepositoryError stream reads observable", async () => {
+    const { RepositoryError } = await import("../src/shared/errors");
+    const errors = [new Error("unexpected stream read failure"), new RepositoryError("forbidden")];
+    for (const error of errors) {
+      const response = htmlResponse("{}");
+      const body = response.body;
+      if (!body) throw new Error("Missing response stream");
+      const reader = body.getReader();
+      vi.spyOn(reader, "read").mockRejectedValue(error);
+      vi.spyOn(body, "getReader").mockReturnValue(reader);
+      fetchMock.mockResolvedValue(response);
+      await expect(handleBridgeRequest(githubRequest, fetchMock, "https://github.com")).rejects.toBe(error);
+    }
+  });
+
+  it("keeps an arbitrary RepositoryError from stream cancellation observable", async () => {
+    const { RepositoryError } = await import("../src/shared/errors");
+    const error = new RepositoryError("forbidden");
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("x".repeat(2_000_001)));
+      },
+      cancel() {
+        throw error;
+      },
+    });
+    fetchMock.mockResolvedValue(htmlResponse(body));
+    await expect(handleBridgeRequest(githubRequest, fetchMock, "https://github.com")).rejects.toBe(error);
+  });
+
+  it.each([
+    [new TypeError("private stream body"), "network"],
+    [new DOMException("private abort reason", "AbortError"), "cancelled"],
+    [new DOMException("private network reason", "NetworkError"), "network"],
+  ])("sanitizes known stream read failure %#", async (error, code) => {
+    const response = htmlResponse("{}");
+    const body = response.body;
+    if (!body) throw new Error("Missing response stream");
+    const reader = body.getReader();
+    vi.spyOn(reader, "read").mockRejectedValue(error);
+    vi.spyOn(body, "getReader").mockReturnValue(reader);
     fetchMock.mockResolvedValue(response);
     await expect(handleBridgeRequest(githubRequest, fetchMock, "https://github.com")).resolves.toEqual({
       channel: "channel-a", requestId: "request-a", ok: false, status: 200, code,

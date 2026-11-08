@@ -1,5 +1,5 @@
 import { buildAllowedRequest } from "./allowlist";
-import { classifyHttpError, RepositoryError, type RepositoryErrorCode } from "../shared/errors";
+import { classifyHttpError, type RepositoryErrorCode } from "../shared/errors";
 import {
   BRIDGE_REQUEST_EVENT,
   BRIDGE_RESPONSE_EVENT,
@@ -83,10 +83,12 @@ function expectedContentType(accept: "json" | "html"): string {
   return accept === "json" ? "application/json" : "text/html";
 }
 
+const oversizedBody = Symbol("oversizedBody");
+
 async function readBoundedText(response: Response, maximumBodyUnits: number): Promise<string> {
   if (!response.body) {
     const text = await response.text();
-    if (text.length > maximumBodyUnits) throw new RepositoryError("compatibility");
+    if (text.length > maximumBodyUnits) throw oversizedBody;
     return text;
   }
 
@@ -105,11 +107,11 @@ async function readBoundedText(response: Response, maximumBodyUnits: number): Pr
           const code = transportFailure(error);
           if (code === null) throw error;
         }
-        throw new RepositoryError("compatibility");
+        throw oversizedBody;
       }
     }
     text += decoder.decode();
-    if (text.length > maximumBodyUnits) throw new RepositoryError("compatibility");
+    if (text.length > maximumBodyUnits) throw oversizedBody;
     return text;
   } finally {
     reader.releaseLock();
@@ -168,18 +170,23 @@ export async function handleBridgeRequest(
   if (response.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !==
     expectedContentType(allowedRequest.accept)) return failure(response.status, "compatibility");
 
+  let text: string;
   try {
-    const text = await readBoundedText(response, allowedRequest.maximumBodyUnits);
-    if (allowedRequest.accept === "html") {
-      return { channel, requestId, ok: true, status: response.status, format: "text", text };
-    }
+    text = await readBoundedText(response, allowedRequest.maximumBodyUnits);
+  } catch (error) {
+    if (error === oversizedBody) return failure(response.status, "compatibility");
+    const code = transportFailure(error);
+    if (code !== null) return failure(response.status, code);
+    throw error;
+  }
+  if (allowedRequest.accept === "html") {
+    return { channel, requestId, ok: true, status: response.status, format: "text", text };
+  }
+  try {
     const data: unknown = JSON.parse(text);
     return { channel, requestId, ok: true, status: response.status, format: "json", data };
   } catch (error) {
-    if (error instanceof RepositoryError) return failure(response.status, error.code);
     if (error instanceof SyntaxError) return failure(response.status, "compatibility");
-    const code = transportFailure(error);
-    if (code !== null) return failure(response.status, code);
     throw error;
   }
 }
