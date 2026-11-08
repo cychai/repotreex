@@ -49,7 +49,7 @@ describe("session provider", () => {
       ],
     });
     expect(request).toHaveBeenCalledExactlyOnceWith(
-      { type: "list-directory", repo: "acme/repo", ref: "release/v1", path: "src" },
+      { platform: "cnb", type: "list-directory", repository: "acme/repo", ref: "release/v1", path: "src" },
       { signal: controller.signal },
     );
   });
@@ -59,14 +59,18 @@ describe("session provider", () => {
     await expect(provider.listDirectory("acme/repo", "main", "")).resolves.toEqual({
       path: "", sha: "root-sha", entries: [],
     });
-    expect(request).toHaveBeenCalledWith({ type: "list-directory", repo: "acme/repo", ref: "main", path: "" }, { signal: undefined });
+    expect(request).toHaveBeenCalledWith({
+      platform: "cnb", type: "list-directory", repository: "acme/repo", ref: "main", path: "",
+    }, { signal: undefined });
   });
 
   it("returns the validated head name rather than its commit hash", async () => {
     const { provider, request } = providerFor(headFixture);
     const controller = new AbortController();
     await expect(provider.getHead("acme/repo", controller.signal)).resolves.toBe("main");
-    expect(request).toHaveBeenCalledExactlyOnceWith({ type: "get-head", repo: "acme/repo" }, { signal: controller.signal });
+    expect(request).toHaveBeenCalledExactlyOnceWith({
+      platform: "cnb", type: "get-head", repository: "acme/repo",
+    }, { signal: controller.signal });
   });
 
   it("accepts the live CNB head and branch shapes where hashes are absent or nested in commit", async () => {
@@ -160,7 +164,7 @@ describe("session provider", () => {
       expect(result.map((ref) => ref.name)).toEqual([...result.map((ref) => ref.name)].sort());
       expect(result.every((ref) => ref.kind === kind)).toBe(true);
       expect(request.mock.calls).toEqual([1, 2, 3].map((page) => [
-        { type, repo: "acme/repo", page, pageSize: 100 }, { signal: undefined },
+        { platform: "cnb", type, repository: "acme/repo", page, pageSize: 100 }, { signal: undefined },
       ]));
     });
 
@@ -230,7 +234,9 @@ describe("session provider", () => {
       });
       const promise = createCnbProvider({ request, dispose: vi.fn() })[method]("acme/repo", controller.signal);
       await expect(promise).rejects.toMatchObject({ code: "cancelled", message: "cancelled" });
-      expect(request).toHaveBeenCalledExactlyOnceWith({ type, repo: "acme/repo", page: 1, pageSize: 100 }, { signal: controller.signal });
+      expect(request).toHaveBeenCalledExactlyOnceWith({
+        platform: "cnb", type, repository: "acme/repo", page: 1, pageSize: 100,
+      }, { signal: controller.signal });
     });
 
     it(`${method} propagates a later page failure without returning partial refs`, async () => {

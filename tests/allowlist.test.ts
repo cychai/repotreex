@@ -3,66 +3,115 @@ import { buildAllowedRequest } from "../src/page/allowlist";
 import { classifyHttpError, RepositoryError } from "../src/shared/errors";
 
 describe("buildAllowedRequest", () => {
+  it("builds isolated CNB and GitHub request shapes", () => {
+    expect(buildAllowedRequest({
+      platform: "cnb", type: "get-head", repository: "acme/repo",
+    })).toEqual({
+      url: new URL("https://cnb.cool/acme/repo/-/git/head"),
+      accept: "json",
+      maximumBodyUnits: 2_000_000,
+    });
+    expect(buildAllowedRequest({
+      platform: "github", type: "repository-page", repository: "acme/repo",
+      ref: "main", path: "src", view: "tree",
+    })).toEqual({
+      url: new URL("https://github.com/acme/repo/tree/main/src"),
+      accept: "html",
+      maximumBodyUnits: 2_000_000,
+    });
+  });
+
   it("builds encoded content URLs", () => {
     expect(
       buildAllowedRequest({
+        platform: "cnb",
         type: "list-directory",
-        repo: "acme/platform/web",
+        repository: "acme/platform/web",
         ref: "release/v1",
         path: "src/a b",
-      }).href,
+      }).url.href,
     ).toBe("https://cnb.cool/acme/platform/web/-/git/contents/src/a%20b?ref=release%2Fv1");
   });
 
   it("builds the root content URL without a trailing content path", () => {
     expect(
       buildAllowedRequest({
+        platform: "cnb",
         type: "list-directory",
-        repo: "acme/platform/web",
+        repository: "acme/platform/web",
         ref: "main",
         path: "",
-      }).href,
+      }).url.href,
     ).toBe("https://cnb.cool/acme/platform/web/-/git/contents?ref=main");
   });
 
   it("builds only the fixed head, branch, and tag endpoint shapes", () => {
-    expect(buildAllowedRequest({ type: "get-head", repo: "acme/platform/web" }).href).toBe(
+    expect(buildAllowedRequest({ platform: "cnb", type: "get-head", repository: "acme/platform/web" }).url.href).toBe(
       "https://cnb.cool/acme/platform/web/-/git/head",
     );
     expect(
       buildAllowedRequest({
+        platform: "cnb",
         type: "list-branches",
-        repo: "acme/platform/web",
+        repository: "acme/platform/web",
         page: 2,
         pageSize: 50,
-      }).href,
+      }).url.href,
     ).toBe("https://cnb.cool/acme/platform/web/-/git/branches?page=2&page_size=50");
     expect(
       buildAllowedRequest({
+        platform: "cnb",
         type: "list-tags",
-        repo: "acme/platform/web",
+        repository: "acme/platform/web",
         page: 3,
         pageSize: 25,
-      }).href,
+      }).url.href,
     ).toBe("https://cnb.cool/acme/platform/web/-/git/tags?page=3&page_size=25");
+  });
+
+  it("builds only the fixed GitHub repository and provisional refs page shapes", () => {
+    expect(buildAllowedRequest({
+      platform: "github", type: "repository-page", repository: "acme/repo",
+      ref: null, path: "", view: "root",
+    }).url.href).toBe("https://github.com/acme/repo");
+    expect(buildAllowedRequest({
+      platform: "github", type: "repository-page", repository: "acme/repo",
+      ref: "release/v1", path: "src/a b", view: "tree",
+    }).url.href).toBe("https://github.com/acme/repo/tree/release/v1/src/a%20b");
+    expect(buildAllowedRequest({
+      platform: "github", type: "repository-page", repository: "acme/repo",
+      ref: "main", path: "README.md", view: "blob",
+    }).url.href).toBe("https://github.com/acme/repo/blob/main/README.md");
+    expect(buildAllowedRequest({
+      platform: "github", type: "repository-page", repository: "acme/repo",
+      ref: "release%2Fv1", path: "src/100%.ts", view: "blob",
+    }).url.href).toBe("https://github.com/acme/repo/blob/release%252Fv1/src/100%25.ts");
+    expect(buildAllowedRequest({
+      platform: "github", type: "refs-page", repository: "acme/repo", kind: "branches", page: 2,
+    }).url.href).toBe("https://github.com/acme/repo/branches/all?page=2");
+    expect(buildAllowedRequest({
+      platform: "github", type: "refs-page", repository: "acme/repo", kind: "tags", page: 3,
+    }).url.href).toBe("https://github.com/acme/repo/tags?page=3");
   });
 
   it("clamps pagination to positive integer request bounds", () => {
     expect(
       buildAllowedRequest({
+        platform: "cnb",
         type: "list-branches",
-        repo: "acme/repo",
+        repository: "acme/repo",
         page: -10,
         pageSize: 1000,
-      }).href,
+      }).url.href,
     ).toBe("https://cnb.cool/acme/repo/-/git/branches?page=1&page_size=100");
     expect(
       buildAllowedRequest({
+        platform: "cnb",
         type: "list-tags",
-        repo: "acme/repo",
+        repository: "acme/repo",
         page: 2.9,
         pageSize: 0.9,
-      }).href,
+      }).url.href,
     ).toBe("https://cnb.cool/acme/repo/-/git/tags?page=2&page_size=1");
   });
 
@@ -79,8 +128,8 @@ describe("buildAllowedRequest", () => {
     "acme/repo\nnext",
     "acme/repo\u0085next",
     "acme/repo\u009fnext",
-  ])("rejects unsafe repository input %s", (repo) => {
-    expect(() => buildAllowedRequest({ type: "get-head", repo })).toThrow(TypeError);
+  ])("rejects unsafe repository input %s", (repository) => {
+    expect(() => buildAllowedRequest({ platform: "cnb", type: "get-head", repository })).toThrow(TypeError);
   });
 
   it.each([
@@ -98,7 +147,9 @@ describe("buildAllowedRequest", () => {
     "rejects unsafe content path input %s",
     (path) => {
       expect(() =>
-        buildAllowedRequest({ type: "list-directory", repo: "acme/repo", ref: "main", path }),
+        buildAllowedRequest({
+          platform: "cnb", type: "list-directory", repository: "acme/repo", ref: "main", path,
+        }),
       ).toThrow(TypeError);
     },
   );
@@ -118,7 +169,9 @@ describe("buildAllowedRequest", () => {
     "rejects unsafe ref input %s",
     (ref) => {
       expect(() =>
-        buildAllowedRequest({ type: "list-directory", repo: "acme/repo", ref, path: "" }),
+        buildAllowedRequest({
+          platform: "cnb", type: "list-directory", repository: "acme/repo", ref, path: "",
+        }),
       ).toThrow(TypeError);
     },
   );
@@ -130,18 +183,69 @@ describe("buildAllowedRequest", () => {
     { page: 1, pageSize: Number.POSITIVE_INFINITY },
   ])("rejects non-finite pagination input %#", ({ page, pageSize }) => {
     expect(() =>
-      buildAllowedRequest({ type: "list-branches", repo: "acme/repo", page, pageSize }),
+      buildAllowedRequest({
+        platform: "cnb", type: "list-branches", repository: "acme/repo", page, pageSize,
+      }),
     ).toThrow(TypeError);
   });
 
-  it("does not expose a generic URL or method operation", () => {
+  it("rejects cross-platform and arbitrary request confusion", () => {
+    expect(() => buildAllowedRequest({
+      platform: "github", type: "get-head", repository: "acme/repo",
+    } as never)).toThrow(TypeError);
     expect(() =>
       buildAllowedRequest({
+        platform: "github",
         type: "fetch",
-        url: "https://example.com",
+        url: "https://evil.example",
         method: "POST",
       } as never),
     ).toThrow(TypeError);
+  });
+
+  it.each([
+    { platform: "cnb", type: "get-head", repository: "acme/repo", url: "https://evil.example" },
+    { platform: "cnb", type: "get-head", repository: "acme/repo", method: "POST" },
+    { platform: "cnb", type: "get-head", repository: "acme/repo", headers: {} },
+    { platform: "cnb", type: "get-head", repository: "acme/repo", credentials: "omit" },
+    { platform: "cnb", type: "get-head", repository: "acme/repo", redirect: "manual" },
+    { platform: "cnb", type: "get-head", repository: "acme/repo", maximumBodyUnits: 1 },
+    { platform: "github", type: "refs-page", repository: "acme/repo", kind: "tags", page: Infinity },
+    { platform: "github", type: "refs-page", repository: "acme/repo", kind: "tags", page: 0 },
+    { platform: "github", type: "refs-page", repository: "acme/repo", kind: "tags", page: 1.5 },
+    { platform: "github", type: "refs-page", repository: "acme/repo", kind: "releases", page: 1 },
+    { platform: "github", type: "repository-page", repository: "acme/repo", ref: null, path: "src", view: "root" },
+    { platform: "github", type: "repository-page", repository: "acme/repo", ref: null, path: "", view: "tree" },
+  ])("rejects non-exact or invalid operation %#", (operation) => {
+    expect(() => buildAllowedRequest(operation as never)).toThrow(TypeError);
+  });
+
+  it("rejects inherited and accessor-backed operation fields without reading them", () => {
+    expect(() => buildAllowedRequest(Object.create({
+      platform: "cnb", type: "get-head", repository: "acme/repo",
+    }) as never)).toThrow(TypeError);
+    let reads = 0;
+    const operation = Object.defineProperty({
+      platform: "cnb", type: "get-head",
+    }, "repository", {
+      enumerable: true,
+      get() { reads++; return "acme/repo"; },
+    });
+    expect(() => buildAllowedRequest(operation as never)).toThrow(TypeError);
+    expect(reads).toBe(0);
+  });
+
+  it("rejects proxy-backed operations without exposing proxy failures", () => {
+    const descriptorProxy = new Proxy({}, {
+      getOwnPropertyDescriptor() { throw new Error("private proxy failure"); },
+    });
+    expect(() => buildAllowedRequest(descriptorProxy as never)).toThrow(TypeError);
+    const ownKeysProxy = new Proxy({
+      platform: "cnb", type: "get-head", repository: "acme/repo",
+    }, {
+      ownKeys() { throw new Error("private proxy failure"); },
+    });
+    expect(() => buildAllowedRequest(ownKeysProxy as never)).toThrow(TypeError);
   });
 });
 

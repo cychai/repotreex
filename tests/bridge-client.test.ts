@@ -37,16 +37,18 @@ describe("bridge client", () => {
   it("correlates concurrent responses out of order using random UUIDs", async () => {
     const uuid = vi.spyOn(window.crypto, "randomUUID");
     const client = createClient();
-    const first = client.request<{ name: string }>({ type: "get-head", repo: "acme/repo" });
+    const first = client.request<{ name: string }>({
+      platform: "cnb", type: "get-head", repository: "acme/repo",
+    });
     const second = client.request<string[]>({
-      type: "list-tags", repo: "acme/repo", page: 1, pageSize: 20,
+      platform: "cnb", type: "list-tags", repository: "acme/repo", page: 1, pageSize: 20,
     });
 
     expect(uuid).toHaveBeenCalledTimes(2);
     expect(requests).toHaveLength(2);
     expect(requests[0]).toEqual({
       channel: "channel-a", requestId: expect.any(String),
-      operation: { type: "get-head", repo: "acme/repo" },
+      operation: { platform: "cnb", type: "get-head", repository: "acme/repo" },
     });
     expect(requests[0].requestId).not.toBe(requests[1].requestId);
     respond({ ...requests[1], operation: undefined }); // Malformed, not a response.
@@ -56,9 +58,29 @@ describe("bridge client", () => {
     await expect(first).resolves.toEqual({ name: "main" });
   });
 
+  it("dispatches the provisional GitHub operation without widening its request envelope", async () => {
+    const client = createClient();
+    const pending = client.request<string>({
+      platform: "github", type: "repository-page", repository: "acme/repo",
+      ref: null, path: "", view: "root",
+    });
+    expect(requests[0]).toEqual({
+      channel: "channel-a", requestId: expect.any(String),
+      operation: {
+        platform: "github", type: "repository-page", repository: "acme/repo",
+        ref: null, path: "", view: "root",
+      },
+    });
+    respond({
+      channel: "channel-a", requestId: requests[0].requestId,
+      ok: true, status: 200, data: "provisional",
+    });
+    await expect(pending).resolves.toBe("provisional");
+  });
+
   it("ignores a different channel even when the request ID matches", async () => {
     const client = createClient("channel-a", 20);
-    const pending = client.request({ type: "get-head", repo: "acme/repo" });
+    const pending = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
     const rejection = expect(pending).rejects.toMatchObject({ code: "network" });
     respond({ channel: "channel-b", requestId: requests[0].requestId, ok: true, status: 200, data: {} });
     await vi.advanceTimersByTimeAsync(20);
@@ -67,12 +89,12 @@ describe("bridge client", () => {
 
   it("ignores unknown IDs and duplicate or late responses", async () => {
     const client = createClient();
-    const first = client.request({ type: "get-head", repo: "acme/repo" });
+    const first = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
     respond({ channel: "channel-a", requestId: "unknown", ok: true, status: 200, data: "wrong" });
     const response = { channel: "channel-a", requestId: requests[0].requestId, ok: true, status: 200, data: "first" };
     respond(response);
     await expect(first).resolves.toBe("first");
-    const second = client.request({ type: "get-head", repo: "acme/repo" });
+    const second = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
     respond(response);
     respond({ ...response, requestId: requests[1].requestId, data: "second" });
     await expect(second).resolves.toBe("second");
@@ -91,9 +113,27 @@ describe("bridge client", () => {
     { ok: false, status: 401, code: "signed-out", data: "private body" },
   ])("ignores malformed response %# before settling", async (fields) => {
     const client = createClient();
-    const pending = client.request({ type: "get-head", repo: "acme/repo" });
+    const pending = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
     const envelope = { channel: "channel-a", requestId: requests[0].requestId };
     respond(fields && !Array.isArray(fields) ? { ...envelope, ...fields } : fields);
+    respond({ ...envelope, ok: true, status: 200, data: "valid" });
+    await expect(pending).resolves.toBe("valid");
+  });
+
+  it("ignores inherited and accessor-backed correlation fields without reading accessors", async () => {
+    const client = createClient();
+    const pending = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
+    const envelope = { channel: "channel-a", requestId: requests[0].requestId };
+    respond(Object.create({ ...envelope, ok: true, status: 200, data: "inherited" }));
+    let reads = 0;
+    const accessor = Object.defineProperty({
+      requestId: envelope.requestId, ok: true, status: 200, data: "accessor",
+    }, "channel", {
+      enumerable: true,
+      get() { reads++; return "channel-a"; },
+    });
+    respond(accessor);
+    expect(reads).toBe(0);
     respond({ ...envelope, ok: true, status: 200, data: "valid" });
     await expect(pending).resolves.toBe("valid");
   });
@@ -104,7 +144,7 @@ describe("bridge client", () => {
     [200, "compatibility"], [0, "cancelled"],
   ] as const)("turns %s/%s into a metadata-limited RepositoryError", async (status, code) => {
     const client = createClient();
-    const pending = client.request({ type: "get-head", repo: "acme/repo" });
+    const pending = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
     respond({ channel: "channel-a", requestId: requests[0].requestId, ok: false, status, code });
     await expect(pending).rejects.toBeInstanceOf(RepositoryError);
     await expect(pending).rejects.toMatchObject({ code, status, message: code });
@@ -117,13 +157,13 @@ describe("bridge client", () => {
       respond({ channel: request.channel, requestId: request.requestId, ok: true, status: 200, data: null });
     };
     window.addEventListener("repotreex:request", listener, { once: true });
-    await expect(createClient().request({ type: "get-head", repo: "acme/repo" })).resolves.toBeNull();
+    await expect(createClient().request({ platform: "cnb", type: "get-head", repository: "acme/repo" })).resolves.toBeNull();
   });
 
   it("cancels a pre-aborted request without dispatching", async () => {
     const controller = new AbortController();
     controller.abort("private reason");
-    await expect(createClient().request({ type: "get-head", repo: "acme/repo" }, { signal: controller.signal }))
+    await expect(createClient().request({ platform: "cnb", type: "get-head", repository: "acme/repo" }, { signal: controller.signal }))
       .rejects.toMatchObject({ code: "cancelled", message: "cancelled" });
     expect(requests).toHaveLength(0);
   });
@@ -132,8 +172,8 @@ describe("bridge client", () => {
     const controller = new AbortController();
     const remove = vi.spyOn(controller.signal, "removeEventListener");
     const client = createClient();
-    const cancelled = client.request({ type: "get-head", repo: "acme/repo" }, { signal: controller.signal });
-    const other = client.request({ type: "get-head", repo: "acme/repo" });
+    const cancelled = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" }, { signal: controller.signal });
+    const other = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
     const rejection = expect(cancelled).rejects.toMatchObject({ code: "cancelled" });
     controller.abort("private reason");
     await rejection;
@@ -147,10 +187,10 @@ describe("bridge client", () => {
     const controller = new AbortController();
     const remove = vi.spyOn(controller.signal, "removeEventListener");
     const client = createClient("channel-a", 20);
-    const success = client.request({ type: "get-head", repo: "acme/repo" }, { signal: controller.signal });
+    const success = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" }, { signal: controller.signal });
     respond({ channel: "channel-a", requestId: requests[0].requestId, ok: true, status: 200, data: {} });
     await success;
-    const timeout = client.request({ type: "get-head", repo: "acme/repo" }, { signal: controller.signal });
+    const timeout = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" }, { signal: controller.signal });
     const rejection = expect(timeout).rejects.toMatchObject({ code: "network" });
     await vi.advanceTimersByTimeAsync(20);
     await rejection;
@@ -160,7 +200,7 @@ describe("bridge client", () => {
   it("uses a bounded default timeout without leaking timers", async () => {
     const client = createBridgeClient(window, "channel-a");
     clients.push(client);
-    const pending = client.request({ type: "get-head", repo: "acme/repo" });
+    const pending = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
     const rejection = expect(pending).rejects.toMatchObject({ code: "network" });
     await vi.advanceTimersByTimeAsync(15_000);
     await rejection;
@@ -169,8 +209,8 @@ describe("bridge client", () => {
   it("keeps clients on different channels independent", async () => {
     const firstClient = createClient("first");
     const secondClient = createClient("second");
-    const first = firstClient.request({ type: "get-head", repo: "acme/repo" });
-    const second = secondClient.request({ type: "get-head", repo: "acme/repo" });
+    const first = firstClient.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
+    const second = secondClient.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
     const rejection = expect(first).rejects.toMatchObject({ code: "cancelled" });
     firstClient.dispose();
     await rejection;
@@ -182,8 +222,8 @@ describe("bridge client", () => {
     const remove = vi.spyOn(window, "removeEventListener");
     const controller = new AbortController();
     const client = createClient();
-    const first = client.request({ type: "get-head", repo: "acme/repo" }, { signal: controller.signal });
-    const second = client.request({ type: "get-head", repo: "acme/repo" });
+    const first = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" }, { signal: controller.signal });
+    const second = client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" });
     const firstRejection = expect(first).rejects.toMatchObject({ code: "cancelled" });
     const secondRejection = expect(second).rejects.toMatchObject({ code: "cancelled" });
     client.dispose();
@@ -191,7 +231,7 @@ describe("bridge client", () => {
     await firstRejection;
     await secondRejection;
     expect(remove.mock.calls.filter(([type]) => type === "repotreex:response")).toHaveLength(1);
-    await expect(client.request({ type: "get-head", repo: "acme/repo" })).rejects.toMatchObject({ code: "cancelled" });
+    await expect(client.request({ platform: "cnb", type: "get-head", repository: "acme/repo" })).rejects.toMatchObject({ code: "cancelled" });
     expect(requests).toHaveLength(2);
   });
 });

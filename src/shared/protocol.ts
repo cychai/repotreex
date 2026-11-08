@@ -2,11 +2,35 @@ export const BRIDGE_REQUEST_EVENT = "repotreex:request";
 export const BRIDGE_RESPONSE_EVENT = "repotreex:response";
 export const NAVIGATION_EVENT = "repotreex:navigation";
 
-export type BridgeOperation =
-  | { type: "list-directory"; repo: string; ref: string; path: string }
-  | { type: "get-head"; repo: string }
-  | { type: "list-branches"; repo: string; page: number; pageSize: number }
-  | { type: "list-tags"; repo: string; page: number; pageSize: number };
+export type CnbBridgeOperation =
+  | { platform: "cnb"; type: "list-directory"; repository: string; ref: string; path: string }
+  | { platform: "cnb"; type: "get-head"; repository: string }
+  | {
+    platform: "cnb";
+    type: "list-branches" | "list-tags";
+    repository: string;
+    page: number;
+    pageSize: number;
+  };
+
+export type GitHubBridgeOperation =
+  | {
+    platform: "github";
+    type: "repository-page";
+    repository: string;
+    ref: string | null;
+    path: string;
+    view: "root" | "tree" | "blob";
+  }
+  | {
+    platform: "github";
+    type: "refs-page";
+    repository: string;
+    kind: "branches" | "tags";
+    page: number;
+  };
+
+export type BridgeOperation = CnbBridgeOperation | GitHubBridgeOperation;
 
 export type BridgeRequest = {
   channel: string;

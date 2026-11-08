@@ -879,7 +879,9 @@ describe("tree store", () => {
       const load = store.loadDirectory("");
       const cancelled = expect(load).rejects.toMatchObject({ code: "cancelled" });
       await Promise.resolve();
-      expect(request?.operation).toEqual({ type: "list-directory", repo: "acme/repo", ref: "main", path: "" });
+      expect(request?.operation).toEqual({
+        platform: "cnb", type: "list-directory", repository: "acme/repo", ref: "main", path: "",
+      });
       store.dispose();
       await cancelled;
       window.dispatchEvent(new CustomEvent(BRIDGE_RESPONSE_EVENT, { detail: {

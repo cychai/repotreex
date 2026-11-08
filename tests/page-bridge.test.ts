@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BridgeRequest } from "../src/shared/protocol";
 
 const request: BridgeRequest = {
-  channel: "channel-a", requestId: "request-a", operation: { type: "get-head", repo: "acme/repo" },
+  channel: "channel-a", requestId: "request-a",
+  operation: { platform: "cnb", type: "get-head", repository: "acme/repo" },
 };
 const historyPrototype: object = Object.getPrototypeOf(window.history);
 const pushDescriptor = Object.getOwnPropertyDescriptor(historyPrototype, "pushState");
@@ -51,9 +52,9 @@ describe("page bridge handler", () => {
   });
 
   it.each([
-    [{ type: "list-directory", repo: "acme/repo", ref: "release/v1", path: "src/a b" }, "https://cnb.cool/acme/repo/-/git/contents/src/a%20b?ref=release%2Fv1"],
-    [{ type: "list-branches", repo: "acme/repo", page: -1, pageSize: 500 }, "https://cnb.cool/acme/repo/-/git/branches?page=1&page_size=100"],
-    [{ type: "list-tags", repo: "acme/repo", page: 2, pageSize: 20 }, "https://cnb.cool/acme/repo/-/git/tags?page=2&page_size=20"],
+    [{ platform: "cnb", type: "list-directory", repository: "acme/repo", ref: "release/v1", path: "src/a b" }, "https://cnb.cool/acme/repo/-/git/contents/src/a%20b?ref=release%2Fv1"],
+    [{ platform: "cnb", type: "list-branches", repository: "acme/repo", page: -1, pageSize: 500 }, "https://cnb.cool/acme/repo/-/git/branches?page=1&page_size=100"],
+    [{ platform: "cnb", type: "list-tags", repository: "acme/repo", page: 2, pageSize: 20 }, "https://cnb.cool/acme/repo/-/git/tags?page=2&page_size=20"],
   ])("consumes allowlist encoding and pagination %#", async (operation, url) => {
     fetchMock.mockResolvedValue(new Response("[]"));
     await expect(handleBridgeRequest({ ...request, operation }, fetchMock)).resolves.toMatchObject({ ok: true });
@@ -132,24 +133,71 @@ describe("page bridge handler", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("rejects a GitHub operation on the CNB main-world boundary before fetch", async () => {
+    await expect(handleBridgeRequest({
+      channel: "channel-a", requestId: "request-a",
+      operation: {
+        platform: "github", type: "repository-page", repository: "acme/repo",
+        ref: null, path: "", view: "root",
+      },
+    }, fetchMock)).resolves.toEqual({
+      channel: "channel-a", requestId: "request-a", ok: false, status: 0, code: "compatibility",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("rejects inherited request correlation fields", async () => {
     await expect(handleBridgeRequest(Object.create(request), fetchMock)).resolves.toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("rejects accessor-backed request and operation fields without reading them", async () => {
+    let reads = 0;
+    const accessorRequest = Object.defineProperty({ requestId: "request-a", operation: request.operation }, "channel", {
+      enumerable: true,
+      get() { reads++; return "channel-a"; },
+    });
+    await expect(handleBridgeRequest(accessorRequest, fetchMock)).resolves.toBeNull();
+    const accessorOperation = Object.defineProperty({ platform: "cnb", type: "get-head" }, "repository", {
+      enumerable: true,
+      get() { reads++; return "acme/repo"; },
+    });
+    await expect(handleBridgeRequest({ ...request, operation: accessorOperation }, fetchMock)).resolves.toEqual({
+      channel: "channel-a", requestId: "request-a", ok: false, status: 0, code: "compatibility",
+    });
+    expect(reads).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects proxy-backed envelopes without leaking proxy failures", async () => {
+    const descriptorProxy = new Proxy({}, {
+      getOwnPropertyDescriptor() { throw new Error("private proxy failure"); },
+    });
+    await expect(handleBridgeRequest(descriptorProxy, fetchMock)).resolves.toBeNull();
+    const ownKeysProxy = new Proxy({ ...request }, {
+      ownKeys() { throw new Error("private proxy failure"); },
+    });
+    await expect(handleBridgeRequest(ownKeysProxy, fetchMock)).resolves.toEqual({
+      channel: "channel-a", requestId: "request-a", ok: false, status: 0, code: "compatibility",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each([
-    undefined, null, [], {}, { type: "get-head", repo: 1 },
-    { type: "fetch", url: "https://example.com", method: "POST" },
-    { type: "get-head", repo: "acme/../repo" },
-    { type: "get-head", repo: "acme/repo", url: "https://example.com" },
-    { type: "get-head", repo: "acme/repo", method: "POST" },
-    { type: "list-directory", repo: "acme/repo", ref: "main", path: 1 },
-    { type: "list-directory", repo: "acme/repo", ref: "main", path: "../private" },
-    { type: "list-directory", repo: "acme/repo", ref: "main?raw=1", path: "" },
-    { type: "list-tags", repo: "acme/repo", page: "1", pageSize: 20 },
-    { type: "list-branches", repo: "acme/repo", page: NaN, pageSize: 20 },
-    { type: "list-tags", repo: "acme/repo", page: 1, pageSize: Infinity },
-    { type: "get-head", repo: "acme/repo\ud800" },
+    undefined, null, [], {}, { platform: "cnb", type: "get-head", repository: 1 },
+    { platform: "cnb", type: "fetch", url: "https://example.com", method: "POST" },
+    { platform: "cnb", type: "get-head", repository: "acme/../repo" },
+    { platform: "cnb", type: "get-head", repository: "acme/repo", url: "https://example.com" },
+    { platform: "cnb", type: "get-head", repository: "acme/repo", method: "POST" },
+    { platform: "cnb", type: "list-directory", repository: "acme/repo", ref: "main", path: 1 },
+    { platform: "cnb", type: "list-directory", repository: "acme/repo", ref: "main", path: "../private" },
+    { platform: "cnb", type: "list-directory", repository: "acme/repo", ref: "main?raw=1", path: "" },
+    { platform: "cnb", type: "list-tags", repository: "acme/repo", page: "1", pageSize: 20 },
+    { platform: "cnb", type: "list-branches", repository: "acme/repo", page: NaN, pageSize: 20 },
+    { platform: "cnb", type: "list-tags", repository: "acme/repo", page: 1, pageSize: Infinity },
+    { platform: "cnb", type: "get-head", repository: "acme/repo\ud800" },
+    { platform: "github", type: "get-head", repository: "acme/repo" },
+    { platform: "github", type: "repository-page", repository: "acme/repo", ref: null, path: "", view: "root", credentials: "omit" },
   ])("rejects malformed or disallowed operations %# without exposing input", async (operation) => {
     await expect(handleBridgeRequest({ ...request, operation }, fetchMock)).resolves.toEqual({
       channel: "channel-a", requestId: "request-a", ok: false, status: 0, code: "compatibility",
@@ -244,9 +292,13 @@ describe("main-world lifetime and event wiring", () => {
     fetchMock.mockResolvedValueOnce(new Response('{"name":"main","sha":"abc"}'));
     const client = createBridgeClient(window, "round-trip", { timeoutMs: 1_000 });
     try {
-      await expect(client.request({ type: "get-head", repo: "acme/repo" })).resolves.toEqual({ name: "main", sha: "abc" });
+      await expect(client.request({
+        platform: "cnb", type: "get-head", repository: "acme/repo",
+      })).resolves.toEqual({ name: "main", sha: "abc" });
       fetchMock.mockResolvedValueOnce(new Response("private", { status: 401 }));
-      await expect(client.request({ type: "get-head", repo: "acme/repo" })).rejects.toMatchObject({ code: "signed-out", status: 401 });
+      await expect(client.request({
+        platform: "cnb", type: "get-head", repository: "acme/repo",
+      })).rejects.toMatchObject({ code: "signed-out", status: 401 });
     } finally {
       client.dispose();
     }

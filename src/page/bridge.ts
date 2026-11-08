@@ -8,29 +8,63 @@ import {
   type BridgeResponse,
 } from "../shared/protocol";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+
+function isRecord(value: unknown): value is object {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function hasOnlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
-  return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+function hasOnlyKeys(value: object, keys: readonly string[]): boolean {
+  try {
+    return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+  } catch {
+    return false;
+  }
+}
+
+function ownData(value: object, key: string): unknown {
+  let descriptor: PropertyDescriptor | undefined;
+  try {
+    descriptor = getOwnPropertyDescriptor(value, key);
+  } catch {
+    return undefined;
+  }
+  return descriptor && "value" in descriptor ? descriptor.value : undefined;
 }
 
 function isOperation(value: unknown): value is BridgeOperation {
-  if (!isRecord(value) || typeof value.repo !== "string") return false;
-  switch (value.type) {
-    case "get-head":
-      return hasOnlyKeys(value, ["type", "repo"]);
-    case "list-directory":
-      return hasOnlyKeys(value, ["type", "repo", "ref", "path"]) &&
-        typeof value.ref === "string" && typeof value.path === "string";
-    case "list-branches":
-    case "list-tags":
-      return hasOnlyKeys(value, ["type", "repo", "page", "pageSize"]) &&
-        typeof value.page === "number" && typeof value.pageSize === "number";
-    default:
-      return false;
+  if (!isRecord(value)) return false;
+  const platform = ownData(value, "platform");
+  const type = ownData(value, "type");
+  const repository = ownData(value, "repository");
+  if (typeof repository !== "string") return false;
+  if (platform === "cnb") {
+    switch (type) {
+      case "get-head":
+        return hasOnlyKeys(value, ["platform", "type", "repository"]);
+      case "list-directory":
+        return hasOnlyKeys(value, ["platform", "type", "repository", "ref", "path"]) &&
+          typeof ownData(value, "ref") === "string" && typeof ownData(value, "path") === "string";
+      case "list-branches":
+      case "list-tags":
+        return hasOnlyKeys(value, ["platform", "type", "repository", "page", "pageSize"]) &&
+          typeof ownData(value, "page") === "number" && typeof ownData(value, "pageSize") === "number";
+      default:
+        return false;
+    }
   }
+  if (platform !== "github") return false;
+  if (type === "repository-page") {
+    const ref = ownData(value, "ref");
+    const view = ownData(value, "view");
+    return hasOnlyKeys(value, ["platform", "type", "repository", "ref", "path", "view"]) &&
+      (typeof ref === "string" || ref === null) && typeof ownData(value, "path") === "string" &&
+      (view === "root" || view === "tree" || view === "blob");
+  }
+  const kind = ownData(value, "kind");
+  return type === "refs-page" &&
+    hasOnlyKeys(value, ["platform", "type", "repository", "kind", "page"]) &&
+    (kind === "branches" || kind === "tags") && typeof ownData(value, "page") === "number";
 }
 
 function transportFailure(error: unknown): RepositoryErrorCode | null {
@@ -44,24 +78,27 @@ function transportFailure(error: unknown): RepositoryErrorCode | null {
 export async function handleBridgeRequest(
   request: unknown,
   fetchImpl: typeof fetch,
+  activeOrigin = window.location.origin,
 ): Promise<BridgeResponse | null> {
   // Without valid correlation fields there is no safe recipient for an error.
-  if (!isRecord(request) ||
-    !Object.hasOwn(request, "channel") || typeof request.channel !== "string" || request.channel.length === 0 ||
-    !Object.hasOwn(request, "requestId") || typeof request.requestId !== "string" || request.requestId.length === 0) {
-    return null;
-  }
-  const { channel, requestId } = request;
+  if (!isRecord(request)) return null;
+  const channel = ownData(request, "channel");
+  const requestId = ownData(request, "requestId");
+  if (typeof channel !== "string" || channel.length === 0 ||
+    typeof requestId !== "string" || requestId.length === 0) return null;
   const failure = (status: number, code: RepositoryErrorCode): BridgeResponse => ({
     channel, requestId, ok: false, status, code,
   });
-  if (!hasOnlyKeys(request, ["channel", "requestId", "operation"]) || !isOperation(request.operation)) {
+  const operation = ownData(request, "operation");
+  if (!hasOnlyKeys(request, ["channel", "requestId", "operation"]) || !isOperation(operation)) {
     return failure(0, "compatibility");
   }
+  const platformOrigin = operation.platform === "cnb" ? "https://cnb.cool" : "https://github.com";
+  if (activeOrigin !== platformOrigin) return failure(0, "compatibility");
 
-  let url: URL;
+  let allowedRequest: ReturnType<typeof buildAllowedRequest>;
   try {
-    url = buildAllowedRequest(request.operation);
+    allowedRequest = buildAllowedRequest(operation);
   } catch (error) {
     if (error instanceof TypeError || error instanceof URIError) return failure(0, "compatibility");
     throw error;
@@ -69,7 +106,7 @@ export async function handleBridgeRequest(
 
   let response: Response;
   try {
-    response = await fetchImpl(url.href, {
+    response = await fetchImpl(allowedRequest.url.href, {
       method: "GET",
       credentials: "include",
       headers: { Accept: "application/json" },

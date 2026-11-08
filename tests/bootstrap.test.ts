@@ -10,7 +10,11 @@ function setup(ready = true, development = false) {
   Object.defineProperty(target.document, "readyState", { value: ready ? "complete" : "loading", configurable: true });
   let valid = true;
   const storage = { get: vi.fn(async () => ({})), set: vi.fn(async () => {}) };
-  const requests: { channel: string; requestId: string; operation: { type: string; repo: string; ref?: string; path?: string } }[] = [];
+  const requests: {
+    channel: string;
+    requestId: string;
+    operation: { platform: string; type: string; repository: string; ref?: string; path?: string };
+  }[] = [];
   const respond = (event: Event) => {
     const request = (event as CustomEvent).detail; requests.push(request);
     const type = request.operation.type;
@@ -33,7 +37,9 @@ describe("content-script lifetime", () => {
     await vi.waitFor(() => expect(t.requests.some((request) => request.operation.type === "list-directory")).toBe(true));
     expect(new Set(t.requests.map((request) => request.channel)).size).toBe(1);
     expect(t.requests[0].channel).toMatch(/^[0-9a-f-]{36}$/);
-    expect(t.requests.at(-1)?.operation).toEqual({ type: "list-directory", repo: "acme/team/repo", ref: "release/v1", path: "" });
+    expect(t.requests.at(-1)?.operation).toEqual({
+      platform: "cnb", type: "list-directory", repository: "acme/team/repo", ref: "release/v1", path: "",
+    });
     expect(t.storage.set).not.toHaveBeenCalled();
   });
   it("destroys the previous Symbol.for instance before replacing it", async () => {

@@ -22,6 +22,8 @@ type ValidBridgeResponse =
   | Extract<BridgeResponse, { ok: true }>
   | (Extract<BridgeResponse, { ok: false }> & { code: RepositoryErrorCode });
 
+const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+
 function isErrorCode(value: unknown): value is RepositoryErrorCode {
   switch (value) {
     case "signed-out":
@@ -40,18 +42,27 @@ function isErrorCode(value: unknown): value is RepositoryErrorCode {
 
 function isResponse(value: unknown): value is ValidBridgeResponse {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  if (!("channel" in value) || typeof value.channel !== "string" ||
-    !("requestId" in value) || typeof value.requestId !== "string" ||
-    !("status" in value) || typeof value.status !== "number" || !Number.isInteger(value.status) ||
-    !("ok" in value)) return false;
-  const keys = value.ok === true
+  const ownData = (key: string): unknown => {
+    const descriptor = getOwnPropertyDescriptor(value, key);
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+  };
+  const channel = ownData("channel");
+  const requestId = ownData("requestId");
+  const status = ownData("status");
+  const ok = ownData("ok");
+  if (typeof channel !== "string" || typeof requestId !== "string" ||
+    typeof status !== "number" || !Number.isInteger(status)) return false;
+  const keys = ok === true
     ? ["channel", "requestId", "ok", "status", "data"]
     : ["channel", "requestId", "ok", "status", "code"];
-  if (Object.keys(value).length !== keys.length || !keys.every((key) => Object.hasOwn(value, key))) return false;
-  return value.ok === true
-    ? value.status >= 200 && value.status <= 299
-    : value.ok === false && value.status >= 0 && value.status <= 599 &&
-      "code" in value && isErrorCode(value.code);
+  try {
+    if (Object.keys(value).length !== keys.length || !keys.every((key) => Object.hasOwn(value, key))) return false;
+  } catch {
+    return false;
+  }
+  return ok === true
+    ? status >= 200 && status <= 299
+    : ok === false && status >= 0 && status <= 599 && isErrorCode(ownData("code"));
 }
 
 export function createBridgeClient(

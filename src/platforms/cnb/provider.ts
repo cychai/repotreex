@@ -12,9 +12,7 @@ export interface RepositoryProvider {
 }
 
 import { RepositoryError } from "../../shared/errors";
-import type {
-  BridgeOperation, TreeContent, TreeEntry, TreeEntryType,
-} from "../../shared/protocol";
+import type { CnbBridgeOperation, TreeContent, TreeEntry, TreeEntryType } from "../../shared/protocol";
 import type { BridgeClient } from "../../content/bridge-client";
 
 const entryKinds: Record<TreeEntryType, EntryKind> = {
@@ -127,7 +125,7 @@ export function createCnbProvider(client: BridgeClient): RepositoryProvider {
     if (disposed || signal?.aborted) throw new RepositoryError("cancelled");
   };
 
-  const request = async (operation: BridgeOperation, signal?: AbortSignal): Promise<unknown> => {
+  const request = async (operation: CnbBridgeOperation, signal?: AbortSignal): Promise<unknown> => {
     ensureActive(signal);
     // Never trust the client's generic type assertion at the unvalidated DTO boundary.
     const data = await client.request<unknown>(operation, { signal });
@@ -138,7 +136,8 @@ export function createCnbProvider(client: BridgeClient): RepositoryProvider {
     const refs = new Map<string, RefOption>();
     for (let page = 1; ; page++) {
       const data = await request({
-        type: kind === "branch" ? "list-branches" : "list-tags", repo, page, pageSize: 100,
+        platform: "cnb", type: kind === "branch" ? "list-branches" : "list-tags",
+        repository: repo, page, pageSize: 100,
       }, signal);
       ensureActive(signal);
       const refsPage = inspectPayload(() => snapshotArray(data, snapshotRef, 100));
@@ -156,14 +155,16 @@ export function createCnbProvider(client: BridgeClient): RepositoryProvider {
 
   return {
     async getHead(repo, signal) {
-      const data = await request({ type: "get-head", repo }, signal);
+      const data = await request({ platform: "cnb", type: "get-head", repository: repo }, signal);
       ensureActive(signal);
       const head = inspectPayload(() => snapshotHead(data));
       ensureActive(signal);
       return head.name;
     },
     async listDirectory(repo, ref, path, signal) {
-      const data = await request({ type: "list-directory", repo, ref, path }, signal);
+      const data = await request({
+        platform: "cnb", type: "list-directory", repository: repo, ref, path,
+      }, signal);
       ensureActive(signal);
       const tree = inspectPayload(() => snapshotTreeContent(data));
       const result = {
