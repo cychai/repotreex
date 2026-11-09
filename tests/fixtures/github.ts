@@ -33,7 +33,7 @@ export const githubBranchesHtmlFixture = embeddedDataFixture({
   payload: {
     current_page: 1,
     has_more: false,
-    per_page: 100,
+    per_page: 20,
     branches: [{ name: "release/v1", path: "/acme/repo/tree/release/v1" }],
   },
 });

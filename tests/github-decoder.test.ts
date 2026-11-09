@@ -51,6 +51,18 @@ describe("GitHub HTML decoder", () => {
     });
   });
 
+  it("normalizes GitHub's current slash root path", () => {
+    const html = githubRootHtmlFixture.replace('"path":""', '"path":"/"');
+    expect(decodeGitHubRepositoryPage(html, expectedRoot)).toEqual({
+      head: "main",
+      listing: {
+        path: "",
+        sha: "synthetic-root-sha",
+        entries: [{ kind: "directory", name: "src", path: "src", sha: null }],
+      },
+    });
+  });
+
   it("relies on request context rather than unobserved repository metadata", () => {
     const html = githubTreeHtmlFixture.replace(
       '"payload":', '"repository":"other/repository","payload":',
@@ -184,16 +196,30 @@ describe("GitHub HTML decoder", () => {
     }));
   });
 
+  it("accepts GitHub's current branch page size and default-branch root link", () => {
+    expect(decodeGitHubRefsPage(embedded({
+      payload: {
+        current_page: 1,
+        has_more: false,
+        per_page: 20,
+        branches: [{ name: "main", isDefault: true, path: "/acme/repo" }],
+      },
+    }), { kind: "branches", repository: "acme/repo", page: 1 })).toEqual({
+      refs: [{ name: "main", sha: null }],
+      hasNextPage: false,
+    });
+  });
+
   it("rejects malformed branch pagination and duplicate branch names", () => {
     const page = (payload: Record<string, unknown>) => embedded({ payload });
     expectCompatibility(() => decodeGitHubRefsPage(page({
-      current_page: 1, has_more: "false", per_page: 100, branches: [],
+      current_page: 1, has_more: "false", per_page: 20, branches: [],
     }), { kind: "branches", repository: "acme/repo", page: 1 }));
     expectCompatibility(() => decodeGitHubRefsPage(page({
       current_page: 1, has_more: false, per_page: 50, branches: [],
     }), { kind: "branches", repository: "acme/repo", page: 1 }));
     expectCompatibility(() => decodeGitHubRefsPage(page({
-      current_page: 1, has_more: false, per_page: 100,
+      current_page: 1, has_more: false, per_page: 20,
       branches: [
         { name: "main", path: "/acme/repo/tree/main" },
         { name: "main", path: "/acme/repo/tree/main" },
@@ -291,7 +317,7 @@ describe("GitHub HTML decoder", () => {
       name: `branch-${index}`, path: `/acme/repo/tree/branch-${index}`,
     }));
     expectCompatibility(() => decodeGitHubRefsPage(embedded({
-      payload: { current_page: 1, has_more: false, per_page: 100, branches },
+      payload: { current_page: 1, has_more: false, per_page: 20, branches },
     }), { kind: "branches", repository: "acme/repo", page: 1 }));
 
     const row = githubTagsHtmlFixture.match(/<div class="Box-row">.*?<\/div>/)?.[0];

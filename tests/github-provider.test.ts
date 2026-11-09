@@ -19,7 +19,7 @@ function branchesPage(page: number, names: string[], hasMore: boolean): string {
     payload: {
       current_page: page,
       has_more: hasMore,
-      per_page: 100,
+      per_page: 20,
       branches: names.map((name) => ({ name, path: `/acme/repo/tree/${name}` })),
     },
   });

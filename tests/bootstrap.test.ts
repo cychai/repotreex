@@ -44,7 +44,7 @@ function setupGitHub() {
     const request = (event as CustomEvent).detail; requests.push(request);
     const operation = request.operation;
     const text = operation.type === "refs-page" && operation.kind === "branches"
-      ? '<script type="application/json" data-target="react-app.embeddedData">{"payload":{"current_page":1,"has_more":false,"per_page":100,"branches":[{"name":"main","path":"/acme/repo/tree/main"}]}}</script>'
+      ? '<script type="application/json" data-target="react-app.embeddedData">{"payload":{"current_page":1,"has_more":false,"per_page":20,"branches":[{"name":"main","path":"/acme/repo/tree/main"}]}}</script>'
       : operation.type === "refs-page"
         ? '<rails-partial data-partial-name="tagsIndexRoute.Results"></rails-partial>'
         : githubRootHtmlFixture;

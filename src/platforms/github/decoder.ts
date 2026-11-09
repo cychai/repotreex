@@ -220,7 +220,8 @@ function decodeRepositoryPage(html: unknown, expectedValue: GitHubExpectedPage):
   const refInfo = requireRecord(ownData(route, "refInfo"));
   const head = requireString(ownData(refInfo, "name"));
   const sha = requireString(ownData(refInfo, "currentOid"));
-  const path = requireString(ownData(route, "path"), { allowEmpty: true });
+  const responsePath = requireString(ownData(route, "path"), { allowEmpty: true });
+  const path = expected.view === "root" && responsePath === "/" ? "" : responsePath;
   if ((expected.ref !== null && head !== expected.ref) || path !== expected.path) fail();
   const tree = requireRecord(ownData(route, "tree"));
   const seenPaths = new Set<string>();
@@ -253,13 +254,15 @@ function decodeBranches(html: unknown, expectedValue: GitHubRefsPageExpected): G
   const currentPage = ownData(payload, "current_page");
   const hasMore = ownData(payload, "has_more");
   const perPage = ownData(payload, "per_page");
-  if (currentPage !== expected.page || typeof hasMore !== "boolean" || perPage !== 100) fail();
+  if (currentPage !== expected.page || typeof hasMore !== "boolean" || perPage !== 20) fail();
   const prefix = `/${expected.repository}/tree/`;
+  const repositoryPath = `/${expected.repository}`;
   const refs = snapshotArray(ownData(payload, "branches"), GITHUB_MAX_REFS, (value) => {
     const branch = requireRecord(value);
     const name = requireString(ownData(branch, "name"));
     const path = requireString(ownData(branch, "path"));
-    if (path !== `${prefix}${name}`) fail();
+    const isDefault = optionalOwnData(branch, "isDefault") === true;
+    if (path !== `${prefix}${name}` && !(isDefault && path === repositoryPath)) fail();
     return { name, sha: null };
   });
   if (new Set(refs.map((ref) => ref.name)).size !== refs.length) fail();
