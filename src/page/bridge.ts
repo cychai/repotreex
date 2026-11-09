@@ -155,7 +155,7 @@ export async function handleBridgeRequest(
   try {
     response = await fetchImpl(allowedRequest.url.href, {
       method: "GET",
-      credentials: "include",
+      credentials: allowedRequest.credentials,
       headers: { Accept: expectedContentType(allowedRequest.accept) },
       cache: "no-store",
       redirect: "follow",

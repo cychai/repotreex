@@ -11,6 +11,7 @@ describe("buildAllowedRequest", () => {
     })).toEqual({
       url: new URL("https://cnb.cool/acme/repo/-/git/head"),
       accept: "json",
+      credentials: "include",
       maximumBodyUnits: 2_000_000,
     });
     expect(buildAllowedRequest({
@@ -19,6 +20,7 @@ describe("buildAllowedRequest", () => {
     })).toEqual({
       url: new URL("https://github.com/acme/repo/tree/main/src"),
       accept: "html",
+      credentials: "omit",
       maximumBodyUnits: 2_000_000,
     });
   });

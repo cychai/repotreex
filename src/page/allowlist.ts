@@ -5,6 +5,7 @@ import { FORBIDDEN_BRIDGE_CONTROLS, type BridgeOperation } from "../shared/proto
 export type AllowedRequest = {
   url: URL;
   accept: "json" | "html";
+  credentials: RequestCredentials;
   maximumBodyUnits: number;
 };
 

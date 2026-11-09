@@ -8,6 +8,7 @@ const ownKeys = Reflect.ownKeys;
 export type GitHubAllowedRequest = {
   url: URL;
   accept: "html";
+  credentials: "omit";
   maximumBodyUnits: number;
 };
 
@@ -91,7 +92,7 @@ function requireCursor(value: unknown): string | null {
 }
 
 function allowed(url: URL): GitHubAllowedRequest {
-  return { url, accept: "html", maximumBodyUnits };
+  return { url, accept: "html", credentials: "omit", maximumBodyUnits };
 }
 
 export function buildGitHubAllowedRequest(

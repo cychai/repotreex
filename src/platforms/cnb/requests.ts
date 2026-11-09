@@ -8,6 +8,7 @@ const ownKeys = Reflect.ownKeys;
 export type CnbAllowedRequest = {
   url: URL;
   accept: "json";
+  credentials: "include";
   maximumBodyUnits: number;
 };
 
@@ -102,7 +103,7 @@ function clampInteger(value: unknown, minimum: number, maximum?: number): number
 }
 
 function allowed(url: URL): CnbAllowedRequest {
-  return { url, accept: "json", maximumBodyUnits };
+  return { url, accept: "json", credentials: "include", maximumBodyUnits };
 }
 
 export function buildCnbAllowedRequest(operation: CnbBridgeOperation): CnbAllowedRequest {

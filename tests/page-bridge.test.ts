@@ -90,14 +90,14 @@ describe("page bridge handler", () => {
     });
   });
 
-  it("fetches GitHub HTML with the active session and returns bounded text", async () => {
+  it("fetches public GitHub HTML without the active session and returns bounded text", async () => {
     const html = '<html><script type="application/json" data-target="react-app.embeddedData">{}</script></html>';
     fetchMock.mockResolvedValue(htmlResponse(html));
     await expect(handleBridgeRequest(githubRequest, fetchMock, "https://github.com")).resolves.toEqual({
       channel: "channel-a", requestId: "request-a", ok: true, status: 200, format: "text", text: html,
     });
     expect(fetchMock).toHaveBeenCalledWith("https://github.com/acme/repo", {
-      method: "GET", credentials: "include", headers: { Accept: "text/html" },
+      method: "GET", credentials: "omit", headers: { Accept: "text/html" },
       cache: "no-store", redirect: "follow",
     });
   });
