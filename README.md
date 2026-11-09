@@ -1,9 +1,15 @@
-# RepoTreeX for CNB
+# RepoTreeX
 
 RepoTreeX is an unpacked Manifest V3 extension that adds a repository tree to
-supported CNB repository pages. Version 0.1.0 uses the current CNB browser
-session for read-only, same-origin requests. It is not published in the Chrome
-Web Store or QQ Browser store, and OAuth is not active.
+supported CNB and GitHub repository pages. It reuses the current website login
+session for read-only, same-origin requests without reading, exporting, or
+persisting cookies and access tokens.
+
+Version 0.1.0 is an initial development release. CNB repository browsing is
+available; GitHub route and same-origin transport support is under active
+development, while its repository provider and user-interface integration are
+not complete yet. RepoTreeX is not published in the Chrome Web Store or QQ
+Browser store, and OAuth is not required or active.
 
 ## Prerequisites
 
@@ -11,7 +17,7 @@ Web Store or QQ Browser store, and OAuth is not active.
 - npm
 - `zip` and `unzip` for release packaging and inspection
 - QQ Browser or Chrome with extension developer mode available
-- CNB access appropriate for each repository being viewed
+- CNB or GitHub access appropriate for each repository being viewed
 
 Install the locked development dependencies and validate the checkout:
 
@@ -37,7 +43,9 @@ controlled distribution; it is not evidence of store publication.
 3. Enable **Developer mode**.
 4. Choose **Load unpacked**.
 5. Select the absolute `dist/extension/` directory from this checkout.
-6. Open or reload a supported `https://cnb.cool/` repository page.
+6. Open or reload a supported repository page. Version 0.1.0 currently mounts
+   the complete tree interface on `https://cnb.cool/`; GitHub mounting remains
+   under development.
 
 After rebuilding, use the extension page's **Reload** action and then reload
 the CNB tab. Installation and removal are user actions; the project does not
@@ -49,7 +57,9 @@ RepoTreeX currently activates on CNB repository roots, blob/file routes, and
 single-commit routes for nested repository slugs. Repository roots and commit
 routes resolve the repository HEAD. Blob routes synchronize the current ref and
 file, including discovered branch or tag names that contain slashes. Other CNB
-routes stay untouched.
+routes stay untouched. GitHub root, tree, and blob route parsing plus bounded
+same-origin page transport are implemented, but the GitHub decoder, provider,
+panel integration, and final manifest enablement are still in progress.
 
 The first release provides:
 
@@ -63,10 +73,9 @@ The first release provides:
 - keyboard tree controls, light/dark appearance, and retryable error states;
 - persistence of only panel open/closed state and panel width.
 
-The primary data path calls only allowlisted read-only CNB endpoints for HEAD,
-branches, tags, and repository contents. Current CNB session cookies are
-attached by the browser to same-origin requests; RepoTreeX does not read or
-export cookies. See [Privacy](docs/privacy.md) and the
+The primary data path calls only allowlisted, read-only, same-origin routes.
+Current website session cookies are attached by the browser; RepoTreeX does not
+read or export cookies. See [Privacy](docs/privacy.md) and the
 [manual verification matrix](docs/manual-test.md).
 
 ## Known limits
@@ -74,6 +83,8 @@ export cookies. See [Privacy](docs/privacy.md) and the
 - Live CNB endpoint schema, private-repository access, logout behavior, QQ
   Browser compatibility, and CNB layout variants require manual acceptance in
   the target browser.
+- GitHub repository decoding, tree loading, panel integration, manifest access,
+  and public/private browser acceptance are not complete in version 0.1.0.
 - OAuth controls are absent and remain disabled until CNB approves and supplies
   a real public-client registration. See
   [OAuth application request](docs/oauth-application.md).
@@ -88,7 +99,7 @@ export cookies. See [Privacy](docs/privacy.md) and the
 
 ## Clean-room boundary
 
-RepoTreeX is an independent implementation based on CNB public/documented
-interfaces and observed product behavior. It does not include copied,
+RepoTreeX is an independent implementation based on CNB and GitHub public or
+documented interfaces and observed product behavior. It does not include copied,
 decompiled, transformed, or derived Octotree source code, assets, identifiers,
 or proprietary protocols. Octotree is only a user-experience reference.
