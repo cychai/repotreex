@@ -262,9 +262,8 @@ function decodeBranches(html: unknown, expectedValue: GitHubRefsPageExpected): G
     if (path !== `${prefix}${name}`) fail();
     return { name, sha: null };
   });
-  const unique = new Map<string, { name: string; sha: null }>();
-  for (const ref of refs) if (!unique.has(ref.name)) unique.set(ref.name, ref);
-  return { refs: [...unique.values()], hasNextPage: hasMore };
+  if (new Set(refs.map((ref) => ref.name)).size !== refs.length) fail();
+  return { refs, hasNextPage: hasMore };
 }
 
 function requireTagExpected(expectedValue: GitHubRefsPageExpected): { repository: string; after: string | null } {
@@ -292,7 +291,7 @@ function decodeTags(html: unknown, expectedValue: GitHubRefsPageExpected): GitHu
   if (rows.length > GITHUB_MAX_REFS) fail();
   const commitPrefix = `/${expected.repository}/commit/`;
   const releasePrefix = `/${expected.repository}/releases/tag/`;
-  const refs = new Map<string, { name: string; sha: string }>();
+  const refs: { name: string; sha: string }[] = [];
   for (const row of rows) {
     const nameLinks = row.querySelectorAll("h2 a.Link--primary");
     if (nameLinks.length !== 1) fail();
@@ -306,10 +305,11 @@ function decodeTags(html: unknown, expectedValue: GitHubRefsPageExpected): GitHu
     const href = attributeValue(commitLinks[0], "href");
     const sha = requireString(href.slice(commitPrefix.length));
     if (sha.includes("/") || sha.includes("?") || sha.includes("#")) fail();
-    if (!refs.has(name)) refs.set(name, { name, sha });
+    refs.push({ name, sha });
   }
+  if (new Set(refs.map((ref) => ref.name)).size !== refs.length) fail();
   const nextLinks = document.querySelectorAll('a[rel="next"][href*="after="]');
-  if (nextLinks.length === 0) return { refs: [...refs.values()], hasNextPage: false };
+  if (nextLinks.length === 0) return { refs, hasNextPage: false };
   if (nextLinks.length !== 1) fail();
   const href = attributeValue(nextLinks[0], "href");
   let url: URL;
@@ -322,7 +322,7 @@ function decodeTags(html: unknown, expectedValue: GitHubRefsPageExpected): GitHu
     url.hash !== "" || [...url.searchParams.keys()].some((key) => key !== "after")) fail();
   const cursors = url.searchParams.getAll("after");
   if (cursors.length !== 1 || cursors[0].length === 0) fail();
-  return { refs: [...refs.values()], hasNextPage: true, nextCursor: cursors[0] };
+  return { refs, hasNextPage: true, nextCursor: cursors[0] };
 }
 
 function decodeSafely<T>(decode: () => T): T {

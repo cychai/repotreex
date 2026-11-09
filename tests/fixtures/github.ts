@@ -15,7 +15,6 @@ export const githubRootHtmlFixture = embeddedDataFixture({
       },
     },
   },
-  repository: "acme/repo",
 });
 
 export const githubTreeHtmlFixture = embeddedDataFixture({
@@ -28,7 +27,6 @@ export const githubTreeHtmlFixture = embeddedDataFixture({
       },
     },
   },
-  repository: "acme/repo",
 });
 
 export const githubBranchesHtmlFixture = embeddedDataFixture({

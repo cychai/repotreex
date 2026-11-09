@@ -73,7 +73,9 @@ export function createGitHubProvider(client: BridgeClient): RepositoryProvider {
       return page.head;
     },
     async listDirectory(repository, ref, path, signal) {
-      const expected = { repository, ref, path, view: "tree" as const };
+      const expected = path === ""
+        ? { repository, ref: null, path: "", view: "root" as const }
+        : { repository, ref, path, view: "tree" as const };
       const html = await request({ platform: "github", type: "repository-page", ...expected }, signal);
       const page = decodeGitHubRepositoryPage(html, expected);
       if (page.head !== ref) throw new RepositoryError("compatibility");

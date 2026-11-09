@@ -48,13 +48,11 @@ describe("GitHub provider", () => {
   it("loads head and directories through exact repository-page operations", async () => {
     const { provider, request } = providerFor(
       githubRootHtmlFixture,
-      githubRootHtmlFixture
-        .replace("codeViewRepoRoute", "codeViewTreeRoute")
-        .replace('"name":"main"', '"name":"release/v1"'),
+      githubRootHtmlFixture,
       githubTreeHtmlFixture,
     );
     await expect(provider.getHead("acme/repo")).resolves.toBe("main");
-    await expect(provider.listDirectory("acme/repo", "release/v1", "")).resolves.toEqual({
+    await expect(provider.listDirectory("acme/repo", "main", "")).resolves.toEqual({
       path: "", sha: "synthetic-root-sha",
       entries: [{ kind: "directory", name: "src", path: "src", sha: null }],
     });
@@ -65,7 +63,7 @@ describe("GitHub provider", () => {
     });
     expect(request.mock.calls).toEqual([
       [{ platform: "github", type: "repository-page", repository: "acme/repo", ref: null, path: "", view: "root" }, { signal: undefined }],
-      [{ platform: "github", type: "repository-page", repository: "acme/repo", ref: "release/v1", path: "", view: "tree" }, { signal: undefined }],
+      [{ platform: "github", type: "repository-page", repository: "acme/repo", ref: null, path: "", view: "root" }, { signal: undefined }],
       [{ platform: "github", type: "repository-page", repository: "acme/repo", ref: "main", path: "src", view: "tree" }, { signal: controller.signal }],
     ]);
   });
@@ -86,14 +84,6 @@ describe("GitHub provider", () => {
     expect(request.mock.calls).toEqual([1, 2].map((page) => [{
       platform: "github", type: "refs-page", repository: "acme/repo", kind: "branches", page,
     }, { signal: undefined }]));
-  });
-
-  it("deduplicates duplicate branches within one page before sorting", async () => {
-    const { provider } = providerFor(branchesPage(1, ["main", "main", "alpha"], false));
-    await expect(provider.listBranches("acme/repo")).resolves.toEqual([
-      { kind: "branch", name: "alpha", sha: null },
-      { kind: "branch", name: "main", sha: null },
-    ]);
   });
 
   it("paginates tags by the observed cursor and keeps the first duplicate", async () => {

@@ -35,7 +35,7 @@ describe("synthetic GitHub fixtures", () => {
   });
 
   it("models root and tree embedded-data paths without captured page content", () => {
-    expect(embeddedData(githubRootHtmlFixture)).toMatchObject({
+    expect(embeddedData(githubRootHtmlFixture)).toEqual({
       payload: {
         codeViewRepoRoute: {
           refInfo: { name: "main", currentOid: "synthetic-root-sha" },
@@ -46,7 +46,7 @@ describe("synthetic GitHub fixtures", () => {
         },
       },
     });
-    expect(embeddedData(githubTreeHtmlFixture)).toMatchObject({
+    expect(embeddedData(githubTreeHtmlFixture)).toEqual({
       payload: {
         codeViewTreeRoute: {
           refInfo: { name: "main", currentOid: "synthetic-tree-sha" },
