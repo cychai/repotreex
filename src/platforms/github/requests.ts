@@ -82,6 +82,14 @@ function requirePage(value: unknown): number {
   return value;
 }
 
+function requireCursor(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || value.length === 0 || hasControlCharacter(value)) {
+    throw new TypeError("Invalid pagination");
+  }
+  return value;
+}
+
 function allowed(url: URL): GitHubAllowedRequest {
   return { url, accept: "html", maximumBodyUnits };
 }
@@ -114,12 +122,19 @@ export function buildGitHubAllowedRequest(
       return allowed(url);
     }
     case "refs-page": {
-      requireExactKeys(record, ["platform", "type", "repository", "kind", "page"]);
       const url = repositoryUrl(ownData(record, "repository"));
       const kind = ownData(record, "kind");
-      if (kind !== "branches" && kind !== "tags") throw new TypeError("Invalid refs kind");
-      url.pathname += kind === "branches" ? "/branches/all" : "/tags";
-      url.search = new URLSearchParams({ page: String(requirePage(ownData(record, "page"))) }).toString();
+      if (kind === "branches") {
+        requireExactKeys(record, ["platform", "type", "repository", "kind", "page"]);
+        url.pathname += "/branches/all";
+        url.search = new URLSearchParams({ page: String(requirePage(ownData(record, "page"))) }).toString();
+        return allowed(url);
+      }
+      if (kind !== "tags") throw new TypeError("Invalid refs kind");
+      requireExactKeys(record, ["platform", "type", "repository", "kind", "after"]);
+      url.pathname += "/tags";
+      const after = requireCursor(ownData(record, "after"));
+      if (after !== null) url.search = new URLSearchParams({ after }).toString();
       return allowed(url);
     }
     default:

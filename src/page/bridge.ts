@@ -65,10 +65,16 @@ function isOperation(value: unknown): value is BridgeOperation {
       (typeof ref === "string" || ref === null) && typeof ownData(value, "path") === "string" &&
       (view === "root" || view === "tree" || view === "blob");
   }
+  if (type !== "refs-page") return false;
   const kind = ownData(value, "kind");
-  return type === "refs-page" &&
-    hasOnlyKeys(value, ["platform", "type", "repository", "kind", "page"]) &&
-    (kind === "branches" || kind === "tags") && typeof ownData(value, "page") === "number";
+  if (kind === "branches") {
+    return hasOnlyKeys(value, ["platform", "type", "repository", "kind", "page"]) &&
+      typeof ownData(value, "page") === "number";
+  }
+  const after = ownData(value, "after");
+  return kind === "tags" &&
+    hasOnlyKeys(value, ["platform", "type", "repository", "kind", "after"]) &&
+    (typeof after === "string" || after === null);
 }
 
 function transportFailure(error: unknown): RepositoryErrorCode | null {

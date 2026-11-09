@@ -71,7 +71,7 @@ describe("buildAllowedRequest", () => {
     ).toBe("https://cnb.cool/acme/platform/web/-/git/tags?page=3&page_size=25");
   });
 
-  it("builds only the fixed GitHub repository and provisional refs page shapes", () => {
+  it("builds only the fixed GitHub repository and observed refs page shapes", () => {
     expect(buildAllowedRequest({
       platform: "github", type: "repository-page", repository: "acme/repo",
       ref: null, path: "", view: "root",
@@ -92,8 +92,11 @@ describe("buildAllowedRequest", () => {
       platform: "github", type: "refs-page", repository: "acme/repo", kind: "branches", page: 2,
     }).url.href).toBe("https://github.com/acme/repo/branches/all?page=2");
     expect(buildAllowedRequest({
-      platform: "github", type: "refs-page", repository: "acme/repo", kind: "tags", page: 3,
-    }).url.href).toBe("https://github.com/acme/repo/tags?page=3");
+      platform: "github", type: "refs-page", repository: "acme/repo", kind: "tags", after: null,
+    }).url.href).toBe("https://github.com/acme/repo/tags");
+    expect(buildAllowedRequest({
+      platform: "github", type: "refs-page", repository: "acme/repo", kind: "tags", after: "release/v1",
+    }).url.href).toBe("https://github.com/acme/repo/tags?after=release%2Fv1");
   });
 
   it("clamps pagination to positive integer request bounds", () => {
@@ -212,9 +215,9 @@ describe("buildAllowedRequest", () => {
     { platform: "cnb", type: "get-head", repository: "acme/repo", credentials: "omit" },
     { platform: "cnb", type: "get-head", repository: "acme/repo", redirect: "manual" },
     { platform: "cnb", type: "get-head", repository: "acme/repo", maximumBodyUnits: 1 },
-    { platform: "github", type: "refs-page", repository: "acme/repo", kind: "tags", page: Infinity },
-    { platform: "github", type: "refs-page", repository: "acme/repo", kind: "tags", page: 0 },
-    { platform: "github", type: "refs-page", repository: "acme/repo", kind: "tags", page: 1.5 },
+    { platform: "github", type: "refs-page", repository: "acme/repo", kind: "tags", after: "" },
+    { platform: "github", type: "refs-page", repository: "acme/repo", kind: "tags", after: 3 },
+    { platform: "github", type: "refs-page", repository: "acme/repo", kind: "tags", page: 1 },
     { platform: "github", type: "refs-page", repository: "acme/repo", kind: "releases", page: 1 },
     { platform: "github", type: "repository-page", repository: "acme/repo", ref: null, path: "src", view: "root" },
     { platform: "github", type: "repository-page", repository: "acme/repo", ref: null, path: "", view: "tree" },
@@ -287,7 +290,7 @@ describe("buildAllowedRequest", () => {
     });
     const githubOperation = Object.assign(Object.create({ origin: "https://evil.example" }), {
       platform: "github" as const, type: "refs-page" as const,
-      repository: "acme/repo", kind: "tags" as const, page: 1,
+      repository: "acme/repo", kind: "tags" as const, after: null,
     });
 
     expect(() => buildCnbAllowedRequest(cnbOperation)).toThrow(TypeError);
@@ -300,7 +303,7 @@ describe("buildAllowedRequest", () => {
     }, {});
     const revokedGitHub = Proxy.revocable({
       platform: "github" as const, type: "refs-page" as const,
-      repository: "acme/repo", kind: "tags" as const, page: 1,
+      repository: "acme/repo", kind: "tags" as const, after: null,
     }, {});
     revokedCnb.revoke();
     revokedGitHub.revoke();

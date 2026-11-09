@@ -29,8 +29,15 @@ export type GitHubBridgeOperation =
     platform: "github";
     type: "refs-page";
     repository: string;
-    kind: "branches" | "tags";
+    kind: "branches";
     page: number;
+  }
+  | {
+    platform: "github";
+    type: "refs-page";
+    repository: string;
+    kind: "tags";
+    after: string | null;
   };
 
 export type BridgeOperation = CnbBridgeOperation | GitHubBridgeOperation;
