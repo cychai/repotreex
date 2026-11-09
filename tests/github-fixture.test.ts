@@ -73,9 +73,9 @@ describe("synthetic GitHub fixtures", () => {
   it("models tag rows and cursor links through observed selectors", () => {
     const document = parseHtml(githubTagsHtmlFixture);
     const row = document.querySelector(tagRowSelector);
-    expect(row?.querySelector('h2 a[href^="/acme/repo/releases/tag/"]')).toMatchObject({
-      textContent: "release/v1",
-    });
+    const tagLink = row?.querySelector("h2 a.Link--primary");
+    expect(tagLink?.textContent).toBe("release/v1");
+    expect(tagLink?.getAttribute("href")).toMatch(/^\/acme\/repo\/releases\/tag\//);
     expect(row?.querySelector('a[href^="/acme/repo/commit/"]')?.getAttribute("href")).toBe(
       "/acme/repo/commit/synthetic-tag-sha",
     );
