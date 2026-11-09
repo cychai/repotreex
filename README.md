@@ -5,11 +5,9 @@ supported CNB and GitHub repository pages. It reuses the current website login
 session for read-only, same-origin requests without reading, exporting, or
 persisting cookies and access tokens.
 
-Version 0.1.0 is an initial development release. CNB repository browsing is
-available; GitHub route and same-origin transport support is under active
-development, while its repository provider and user-interface integration are
-not complete yet. RepoTreeX is not published in the Chrome Web Store or QQ
-Browser store, and OAuth is not required or active.
+Version 0.1.0 is an initial development release. It supports repository-tree
+browsing on CNB and public GitHub repositories. RepoTreeX is not published in
+the Chrome Web Store or QQ Browser store, and OAuth is not required or active.
 
 ## Prerequisites
 
@@ -43,9 +41,8 @@ controlled distribution; it is not evidence of store publication.
 3. Enable **Developer mode**.
 4. Choose **Load unpacked**.
 5. Select the absolute `dist/extension/` directory from this checkout.
-6. Open or reload a supported repository page. Version 0.1.0 currently mounts
-   the complete tree interface on `https://cnb.cool/`; GitHub mounting remains
-   under development.
+6. Open or reload a supported `https://cnb.cool/` or `https://github.com/`
+   repository page.
 
 After rebuilding, use the extension page's **Reload** action and then reload
 the CNB tab. Installation and removal are user actions; the project does not
@@ -57,15 +54,15 @@ RepoTreeX currently activates on CNB repository roots, blob/file routes, and
 single-commit routes for nested repository slugs. Repository roots and commit
 routes resolve the repository HEAD. Blob routes synchronize the current ref and
 file, including discovered branch or tag names that contain slashes. Other CNB
-routes stay untouched. GitHub root, tree, and blob route parsing plus bounded
-same-origin page transport are implemented, but the GitHub decoder, provider,
-panel integration, and final manifest enablement are still in progress.
+routes stay untouched. GitHub repository roots, tree routes, and blob routes
+use the same tree panel, lazy loading, file navigation, ref selection, and
+loaded-path search behavior.
 
 The first release provides:
 
 - a left-side, resizable and collapsible repository tree;
 - lazy directory expansion and current-file reveal;
-- file navigation through canonical CNB blob URLs;
+- file navigation through canonical CNB or GitHub blob URLs;
 - branch and tag selection;
 - case-insensitive search across nodes already loaded in the tab;
 - optional bounded full-tree loading for search, with progress, cancellation,
@@ -83,8 +80,8 @@ read or export cookies. See [Privacy](docs/privacy.md) and the
 - Live CNB endpoint schema, private-repository access, logout behavior, QQ
   Browser compatibility, and CNB layout variants require manual acceptance in
   the target browser.
-- GitHub repository decoding, tree loading, panel integration, manifest access,
-  and public/private browser acceptance are not complete in version 0.1.0.
+- GitHub support is limited to public repositories in version 0.1.0. GitHub
+  Enterprise and private-repository acceptance are outside this release.
 - OAuth controls are absent and remain disabled until CNB approves and supplies
   a real public-client registration. See
   [OAuth application request](docs/oauth-application.md).

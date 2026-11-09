@@ -50,13 +50,13 @@ const MIN_WIDTH = 240;
 const MAX_WIDTH = 560;
 const LAYOUT_CLASS = "repotreex-panel-open";
 const messages: Record<TreeDirectoryError["code"], string> = {
-  "signed-out": "CNB login expired. Sign in to view the repository.",
-  forbidden: "Repository access denied. Check your CNB permissions.",
+  "signed-out": "Site login expired. Sign in to view the repository.",
+  forbidden: "Repository access denied. Check your site permissions.",
   "not-found": "Repository, ref or path not found.",
   "rate-limited": "Request rate limited. Try again later.",
-  server: "CNB is unavailable. Try again.",
+  server: "The repository host is unavailable. Try again.",
   network: "Network request failed. Try again.",
-  compatibility: "CNB response is incompatible. Try again after refreshing.",
+  compatibility: "The repository response is incompatible. Try again after refreshing.",
   cancelled: "Request cancelled.",
 };
 
@@ -282,7 +282,7 @@ export function mountTreePanel(options: PanelOptions): TreePanel {
     status.textContent = fullLoading && progress
       ? `Loading full tree: ${progress.loadedNodes} paths; ${progress.queuedDirectories} queued; ${progress.activeRequests} active.`
       : busy ? "Loading repository tree..."
-      : !activeSession ? "Open a supported CNB repository."
+      : !activeSession ? "Open a supported CNB or GitHub repository."
       : failure && failure.code !== "cancelled" ? ""
       : visible.length === 0 ? query.trim() ? "No matching paths"
         : rootNode?.loaded ? "This repository is empty" : "Waiting for repository tree..." : "";

@@ -1,18 +1,18 @@
 {
   "manifest_version": 3,
-  "name": "RepoTreeX for CNB",
+  "name": "RepoTreeX",
   "version": "0.1.0",
-  "description": "A fast repository tree for CNB code pages.",
+  "description": "A fast repository tree for CNB and GitHub code pages.",
   "permissions": ["storage"],
-  "host_permissions": ["https://cnb.cool/*"],
+  "host_permissions": ["https://cnb.cool/*", "https://github.com/*"],
   "content_scripts": [
     {
-      "matches": ["https://cnb.cool/*"],
+      "matches": ["https://cnb.cool/*", "https://github.com/*"],
       "js": ["content/index.js"],
       "run_at": "document_start"
     },
     {
-      "matches": ["https://cnb.cool/*"],
+      "matches": ["https://cnb.cool/*", "https://github.com/*"],
       "js": ["page/bridge.js"],
       "run_at": "document_start",
       "world": "MAIN"

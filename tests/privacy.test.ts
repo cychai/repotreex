@@ -37,12 +37,12 @@ const expectedBuiltFiles = [
 ];
 const expectedContentScripts = [
   {
-    matches: ["https://cnb.cool/*"],
+    matches: ["https://cnb.cool/*", "https://github.com/*"],
     js: ["content/index.js"],
     run_at: "document_start",
   },
   {
-    matches: ["https://cnb.cool/*"],
+    matches: ["https://cnb.cool/*", "https://github.com/*"],
     js: ["page/bridge.js"],
     run_at: "document_start",
     world: "MAIN",
@@ -82,7 +82,7 @@ function expectNoForbiddenRuntimeApis(source: string): void {
 describe("privacy boundary", () => {
   it("keeps the manifest on the exact least-privilege permission set", () => {
     expect(manifest.permissions).toEqual(["storage"]);
-    expect(manifest.host_permissions).toEqual(["https://cnb.cool/*"]);
+    expect(manifest.host_permissions).toEqual(["https://cnb.cool/*", "https://github.com/*"]);
     expect(manifest.content_scripts).toEqual(expectedContentScripts);
     expect(manifest.permissions.some((permission) => forbiddenPermissions.includes(permission))).toBe(false);
   });
@@ -256,7 +256,7 @@ describe("privacy boundary", () => {
     expectNoForbiddenRuntimeApis(buildOutput);
     const builtManifest = JSON.parse(readFileSync(path.join(extensionRoot, "manifest.json"), "utf8")) as typeof manifest;
     expect(builtManifest.permissions).toEqual(["storage"]);
-    expect(builtManifest.host_permissions).toEqual(["https://cnb.cool/*"]);
+    expect(builtManifest.host_permissions).toEqual(["https://cnb.cool/*", "https://github.com/*"]);
     expect(builtManifest.content_scripts).toEqual(expectedContentScripts);
     const builtJavaScript = globSync("**/*.js", { cwd: extensionRoot }).sort();
     const builtStorageUsers = builtJavaScript.filter((file) =>

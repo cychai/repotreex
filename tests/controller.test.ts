@@ -5,6 +5,7 @@ import { createPreferenceStore } from "../src/content/preferences";
 import type { DirectoryListing, RepositoryProvider } from "../src/content/provider";
 import { createTreeStore } from "../src/content/tree-store";
 import { RepositoryError } from "../src/shared/errors";
+import { cnbAdapter } from "../src/platforms/cnb";
 
 const controllers: RepoTreeController[] = [];
 beforeEach(() => { Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { value: vi.fn(), configurable: true }); });
@@ -42,7 +43,7 @@ function setup(patch: Partial<RepositoryProvider> = {}) {
   let actions!: PanelOptions;
   let currentUrl = url();
   const controller = createRepoTreeController({
-    window, provider, store, preferences: createPreferenceStore(storage), navigate,
+    window, adapter: cnbAdapter, provider, store, preferences: createPreferenceStore(storage), navigate,
     getUrl: () => currentUrl,
     mountPanel(options) { actions = options; panel = mountTreePanel(options); return panel; },
   });

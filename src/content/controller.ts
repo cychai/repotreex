@@ -1,5 +1,5 @@
 import { RepositoryError } from "../shared/errors";
-import { buildBlobUrl, parseCnbRoute, type CnbRoute, type RepositoryRoute } from "../shared/route";
+import type { PlatformRoute, RepositoryPlatformAdapter, RepositoryRoute } from "../platforms/types";
 import { mountTreePanel, type PanelOptions, type PanelState, type TreePanel } from "./panel";
 import type { Preferences, PreferenceStore } from "./preferences";
 import type { RefOption, RepositoryProvider } from "./provider";
@@ -14,6 +14,7 @@ export interface RepoTreeController {
 
 export interface ControllerDependencies {
   window: Window;
+  adapter: RepositoryPlatformAdapter;
   provider: RepositoryProvider;
   store: TreeStore;
   preferences: PreferenceStore;
@@ -41,40 +42,22 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 
 // Encoded slash refs need a provisional hint to discover the repo. The final
 // route must still match a discovered ref (or HEAD), never this URL-only hint.
-function provisionalRoute(url: URL): CnbRoute {
-  const parsed = parseCnbRoute(url);
-  if (parsed.kind !== "unsupported") return parsed;
-  const segment = url.pathname.split("/-/blob/")[1]?.split("/")[0];
+function provisionalRoute(adapter: RepositoryPlatformAdapter, url: URL): PlatformRoute {
+  const parsed = adapter.parseRoute(url);
+  if ("platform" in parsed) return parsed;
+  const marker = adapter.id === "cnb" ? "/-/blob/" : "/blob/";
+  const segment = url.pathname.split(marker)[1]?.split("/")[0];
   if (segment === undefined) return parsed;
   try {
-    return parseCnbRoute(url, { knownRef: decodeURIComponent(segment) });
+    return adapter.parseRoute(url, { knownRef: decodeURIComponent(segment) });
   } catch (error) {
     if (error instanceof URIError) return parsed;
     throw error;
   }
 }
 
-function reconcile(url: URL, refs: readonly RefOption[], head: string): CnbRoute {
-  const route = parseCnbRoute(url);
-  const candidates = [...new Set([head, ...refs.map((ref) => ref.name)])]
-    .sort((left, right) => right.length - left.length);
-  for (const name of candidates) {
-    const candidate = parseCnbRoute(url, { knownRef: name });
-    if (candidate.kind === "blob" && candidate.ref === name) return candidate;
-  }
-  // A simple provisional ref can be an unlisted SHA. Unknown encoded slash
-  // refs fail closed because they have no independently established boundary.
-  return route;
-}
-
-function refRootUrl(route: RepositoryRoute, ref: string): URL {
-  const result = buildBlobUrl(route, ref, "__repotreex_root__");
-  result.pathname = result.pathname.slice(0, -"/__repotreex_root__".length);
-  return result;
-}
-
 export function createRepoTreeController(dependencies: ControllerDependencies): RepoTreeController {
-  const { window, provider, store, preferences } = dependencies;
+  const { window, adapter, provider, store, preferences } = dependencies;
   const getUrl = dependencies.getUrl ?? (() => new URL(window.location.href));
   const navigate = dependencies.navigate ?? ((href: string) => window.location.assign(href));
   let panel: TreePanel | null = null;
@@ -257,7 +240,7 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
         if (!route || !route.ref || destroyed) return;
         const node = store.getSnapshot().nodesByPath[path];
         if (!node || node.kind === "directory") { failure(new RepositoryError("not-found"), generation); return; }
-        try { navigate(buildBlobUrl(route, route.ref, path).href); }
+        try { navigate(adapter.buildFileUrl(route, route.ref, path).href); }
         catch (value) { failure(value, generation); }
       },
       onToggleDirectory: (path) => { void runDirectory(path, true); },
@@ -269,9 +252,9 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
       onCancelFullTree() { cancelTraversal(true); render(); },
       onSelectRef(ref) {
         if (!route || destroyed || !refs.some((option) => option.name === ref)) return;
-        const file = route.filePath && store.getSnapshot().nodesByPath[route.filePath];
-        const path = route.filePath && (!file || file.kind !== "directory") ? route.filePath : null;
-        try { navigate((path ? buildBlobUrl(route, ref, path) : refRootUrl(route, ref)).href); }
+        const file = route.path && store.getSnapshot().nodesByPath[route.path];
+        const path = route.path && (!file || file.kind !== "directory") ? route.path : null;
+        try { navigate((path ? adapter.buildFileUrl(route, ref, path) : adapter.buildRefRootUrl(route, ref)).href); }
         catch (value) { failure(value, generation); }
       },
       onPreferenceChange: savePreferences,
@@ -281,7 +264,7 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
     if (!route?.ref) return;
     const active = route;
     const session = sessionVersion;
-    const path = active.filePath;
+    const path = active.path;
     let parent = "";
     let rootLoaded = false;
     try {
@@ -309,8 +292,8 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
       if (!rootLoaded || !(value instanceof RepositoryError) || value.code !== "not-found") {
         failure(value, token, { kind: "reveal", path: parent }); return;
       }
-      store.selectPath(null); route = { ...active, filePath: null }; routeNotice = "path-not-found";
-      const fallback = refRootUrl(active, active.ref ?? head); fallback.hash = "repotreex-path-not-found";
+      store.selectPath(null); route = { ...active, path: null }; routeNotice = "path-not-found";
+      const fallback = adapter.buildRefRootUrl(active, active.ref ?? head); fallback.hash = "repotreex-path-not-found";
       if (url.href !== fallback.href) navigate(fallback.href);
     }
   };
@@ -321,16 +304,16 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
     const signal = navigation.signal;
     discovery?.abort(); discovery = null; cancelTraversal(); error = null;
     directoryErrors.clear(); revealError = null;
-    const provisional = provisionalRoute(url);
-    if (provisional.kind === "unsupported") {
+    const provisional = provisionalRoute(adapter, url);
+    if (!("platform" in provisional)) {
       loading = false; clear(); panel?.destroy(); panel = null; return;
     }
     const previous = route;
-    const repo = provisional.repo;
-    const cached = refsRepo === provisional.repo;
+    const repo = provisional.repository;
+    const cached = refsRepo === provisional.repository;
     const cachedRefs = refs; const cachedHead = head; const cachedFallback = headFallback;
-    const stable = cached ? reconcile(url, refs, head) : provisional;
-    const sameSession = stable.kind !== "unsupported" && previous?.repo === stable.repo && previous.ref === (stable.ref ?? head)
+    const stable = cached ? adapter.reconcileRoute(url, refs, head) : provisional;
+    const sameSession = "platform" in stable && previous?.repository === stable.repository && previous.ref === (stable.ref ?? head)
       && store.getSnapshot().repo !== null;
     if (!sameSession) { clear(); rateLimited = false; }
     else { store.selectPath(null); routeNotice = null; }
@@ -363,11 +346,11 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
       const outcome = await untilAborted(resolution, signal);
       if (!current(token)) return;
       if (outcome) throw outcome.value;
-      const resolved = reconcile(url, refs, head);
-      if (resolved.kind === "unsupported") { clear(); panel?.destroy(); panel = null; return; }
+      const resolved = adapter.reconcileRoute(url, refs, head);
+      if (!("platform" in resolved)) { clear(); panel?.destroy(); panel = null; return; }
       route = { ...resolved, ref: resolved.ref ?? head };
       routeNotice = url.hash === "#repotreex-path-not-found" ? "path-not-found" : headFallback ? "head-fallback" : null;
-      if (!sameSession) store.startSession(route.repo, route.ref ?? head);
+      if (!sameSession) store.startSession(route.repository, route.ref ?? head);
       await untilAborted(reveal(token, url), signal);
     } catch (value) { failure(value, token); }
     finally { if (current(token)) { loading = false; render(); } }
@@ -379,7 +362,7 @@ export function createRepoTreeController(dependencies: ControllerDependencies): 
     cancelTraversal(); discovery?.abort(); discovery = null;
     rateLimited = false; error = null; loading = true; query = "";
     directoryErrors.clear(); revealError = null;
-    panel?.clearSensitiveData(); store.startSession(route.repo, route.ref);
+    panel?.clearSensitiveData(); store.startSession(route.repository, route.ref);
     try { await reveal(token, getUrl()); }
     catch (value) { failure(value, token); }
     finally { if (current(token)) { loading = false; render(); } }

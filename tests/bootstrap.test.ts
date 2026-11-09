@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bootstrapContentScript } from "../src/content/index";
 import { BRIDGE_REQUEST_EVENT, BRIDGE_RESPONSE_EVENT } from "../src/shared/protocol";
+import { githubRootHtmlFixture } from "./fixtures/github";
 
 const cleanups: (() => void)[] = [];
 function setup(ready = true, development = false) {
@@ -30,8 +31,43 @@ function setup(ready = true, development = false) {
   cleanups.push(() => { instance.destroy(); target.removeEventListener(BRIDGE_REQUEST_EVENT, respond); });
   return { target, storage, requests, instance, options, invalidate() { valid = false; } };
 }
+
+function setupGitHub() {
+  const target = window;
+  const location = Object.getOwnPropertyDescriptor(target, "location");
+  Object.defineProperty(target, "location", { value: new URL("https://github.com/acme/repo"), configurable: true });
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { value() {}, configurable: true });
+  Object.defineProperty(target.document, "readyState", { value: "complete", configurable: true });
+  const storage = { get: vi.fn(async () => ({})), set: vi.fn(async () => {}) };
+  const requests: CustomEvent["detail"][] = [];
+  const respond = (event: Event) => {
+    const request = (event as CustomEvent).detail; requests.push(request);
+    const operation = request.operation;
+    const text = operation.type === "refs-page" && operation.kind === "branches"
+      ? '<script type="application/json" data-target="react-app.embeddedData">{"payload":{"current_page":1,"has_more":false,"per_page":100,"branches":[{"name":"main","path":"/acme/repo/tree/main"}]}}</script>'
+      : operation.type === "refs-page"
+        ? '<rails-partial data-partial-name="tagsIndexRoute.Results"></rails-partial>'
+        : githubRootHtmlFixture;
+    target.dispatchEvent(new CustomEvent(BRIDGE_RESPONSE_EVENT, { detail: {
+      channel: request.channel, requestId: request.requestId, ok: true, status: 200, format: "text", text,
+    } }));
+  };
+  target.addEventListener(BRIDGE_REQUEST_EVENT, respond);
+  const instance = bootstrapContentScript(target, { storage, isContextValid: () => true });
+  cleanups.push(() => {
+    instance.destroy(); target.removeEventListener(BRIDGE_REQUEST_EVENT, respond);
+    if (location) Object.defineProperty(target, "location", location);
+  });
+  return { target, requests };
+}
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); vi.unstubAllGlobals(); });
 describe("content-script lifetime", () => {
+  it("mounts the repository tree on a public GitHub repository", async () => {
+    const t = setupGitHub();
+    await vi.waitFor(() => expect(t.target.document.getElementById("repotreex-root")).not.toBeNull());
+    await vi.waitFor(() => expect(t.requests.some((request) => request.operation.type === "repository-page")).toBe(true));
+    expect(t.requests.every((request) => request.operation.platform === "github")).toBe(true);
+  });
   it("boots the real bridge/provider/store/preferences/panel/controller with one random channel", async () => {
     const t = setup(); await vi.waitFor(() => expect(t.target.document.getElementById("repotreex-root")).not.toBeNull());
     await vi.waitFor(() => expect(t.requests.some((request) => request.operation.type === "list-directory")).toBe(true));

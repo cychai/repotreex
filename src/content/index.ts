@@ -1,9 +1,9 @@
 import { createBridgeClient } from "./bridge-client";
 import { createRepoTreeController, type RepoTreeController } from "./controller";
 import { createPreferenceStore, type PreferenceStorage } from "./preferences";
-import { createSessionProvider } from "./provider";
 import { createTreeStore } from "./tree-store";
 import { NAVIGATION_EVENT } from "../shared/protocol";
+import { repositoryPlatformForUrl } from "../platforms/registry";
 
 export type ContentScriptInstance = { destroy(): void };
 export type BootstrapOptions = {
@@ -28,6 +28,7 @@ export function bootstrapContentScript(target: Window, options: BootstrapOptions
     && Object.getOwnPropertyDescriptor(previous, SUSPENDED)?.value === true;
   if (typeof previous === "object" && previous !== null && "destroy" in previous && typeof previous.destroy === "function") previous.destroy();
   let controller: RepoTreeController | null = null;
+  let activeOrigin: string | null = null;
   const valid = options.isContextValid ?? contextValid;
   let destroyed = false;
   let suspended = wasSuspended;
@@ -49,18 +50,29 @@ export function bootstrapContentScript(target: Window, options: BootstrapOptions
   const onNavigation = () => {
     if (destroyed || suspended || !ready) return;
     if (!valid()) { instance.destroy(); return; }
+    const currentUrl = new URL(target.location.href);
+    const adapter = repositoryPlatformForUrl(currentUrl);
+    if (!adapter) {
+      const outgoing = controller; controller = null; activeOrigin = null; outgoing?.destroy();
+      return;
+    }
+    if (controller && activeOrigin !== adapter.origin) {
+      const outgoing = controller; controller = null; outgoing.destroy();
+    }
     if (!controller) {
       const bridge = createBridgeClient(target, target.crypto.randomUUID());
-      const provider = createSessionProvider(bridge);
+      const provider = adapter.createProvider(bridge);
       const store = createTreeStore(provider);
       controller = createRepoTreeController({
         window: target,
+        adapter,
         provider,
         store,
         preferences: createPreferenceStore(options.storage),
       });
+      activeOrigin = adapter.origin;
     }
-    void controller.handleNavigation(new URL(target.location.href));
+    void controller.handleNavigation(currentUrl);
   };
   const onReady = () => { ready = true; onNavigation(); };
   const startTimer = () => { timer ??= target.setInterval(() => { if (!valid()) instance.destroy(); }, 1000); };
