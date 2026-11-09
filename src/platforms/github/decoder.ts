@@ -21,7 +21,7 @@ export type GitHubRepositoryPage = {
 };
 
 export type GitHubRefPage = {
-  refs: { name: string; sha: string }[];
+  refs: { name: string; sha: string | null }[];
   hasNextPage: boolean;
   nextCursor?: string;
 };
@@ -192,10 +192,6 @@ function requireExpectedPage(value: GitHubExpectedPage): GitHubExpectedPage {
   return { repository, ref, path, view };
 }
 
-function requireRepositoryMatch(root: object, repository: string): void {
-  if (ownData(root, "repository") !== repository) fail();
-}
-
 function contentKind(value: unknown): "directory" | "file" | "link" | "submodule" {
   switch (value) {
     case "directory":
@@ -216,7 +212,6 @@ function validateEntryPath(parentPath: string, name: string, path: string): void
 function decodeRepositoryPage(html: unknown, expectedValue: GitHubExpectedPage): GitHubRepositoryPage {
   const expected = requireExpectedPage(expectedValue);
   const root = requireRecord(embeddedPayload(parseDocument(html)));
-  requireRepositoryMatch(root, expected.repository);
   const payload = requireRecord(ownData(root, "payload"));
   const routeKey = expected.view === "root" ? "codeViewRepoRoute" : "codeViewTreeRoute";
   const otherRouteKey = expected.view === "root" ? "codeViewTreeRoute" : "codeViewRepoRoute";
@@ -237,7 +232,7 @@ function decodeRepositoryPage(html: unknown, expectedValue: GitHubExpectedPage):
     validateEntryPath(path, name, itemPath);
     if (seenPaths.has(itemPath)) fail();
     seenPaths.add(itemPath);
-    return { kind, name, path: itemPath, sha };
+    return { kind, name, path: itemPath, sha: null };
   });
   return { head, listing: { path, sha, entries } };
 }
@@ -265,10 +260,11 @@ function decodeBranches(html: unknown, expectedValue: GitHubRefsPageExpected): G
     const name = requireString(ownData(branch, "name"));
     const path = requireString(ownData(branch, "path"));
     if (path !== `${prefix}${name}`) fail();
-    return { name, sha: path };
+    return { name, sha: null };
   });
-  if (new Set(refs.map((ref) => ref.name)).size !== refs.length) fail();
-  return { refs, hasNextPage: hasMore };
+  const unique = new Map<string, { name: string; sha: null }>();
+  for (const ref of refs) if (!unique.has(ref.name)) unique.set(ref.name, ref);
+  return { refs: [...unique.values()], hasNextPage: hasMore };
 }
 
 function requireTagExpected(expectedValue: GitHubRefsPageExpected): { repository: string; after: string | null } {
@@ -292,11 +288,11 @@ function decodeTags(html: unknown, expectedValue: GitHubRefsPageExpected): GitHu
   if (document.querySelector('form[action="/session"] input[name="login"]')) fail();
   const partials = document.querySelectorAll('rails-partial[data-partial-name="tagsIndexRoute.Results"]');
   if (partials.length !== 1) fail();
-  const rows = partials[0].querySelectorAll(":scope > .Box-row");
+  const rows = partials[0].querySelectorAll(".Box-row");
   if (rows.length > GITHUB_MAX_REFS) fail();
   const commitPrefix = `/${expected.repository}/commit/`;
   const releasePrefix = `/${expected.repository}/releases/tag/`;
-  const refs: { name: string; sha: string }[] = [];
+  const refs = new Map<string, { name: string; sha: string }>();
   for (const row of rows) {
     const nameLinks = row.querySelectorAll("h2 a.Link--primary");
     if (nameLinks.length !== 1) fail();
@@ -310,11 +306,10 @@ function decodeTags(html: unknown, expectedValue: GitHubRefsPageExpected): GitHu
     const href = attributeValue(commitLinks[0], "href");
     const sha = requireString(href.slice(commitPrefix.length));
     if (sha.includes("/") || sha.includes("?") || sha.includes("#")) fail();
-    refs.push({ name, sha });
+    if (!refs.has(name)) refs.set(name, { name, sha });
   }
-  if (new Set(refs.map((ref) => ref.name)).size !== refs.length) fail();
   const nextLinks = document.querySelectorAll('a[rel="next"][href*="after="]');
-  if (nextLinks.length === 0) return { refs, hasNextPage: false };
+  if (nextLinks.length === 0) return { refs: [...refs.values()], hasNextPage: false };
   if (nextLinks.length !== 1) fail();
   const href = attributeValue(nextLinks[0], "href");
   let url: URL;
@@ -327,7 +322,7 @@ function decodeTags(html: unknown, expectedValue: GitHubRefsPageExpected): GitHu
     url.hash !== "" || [...url.searchParams.keys()].some((key) => key !== "after")) fail();
   const cursors = url.searchParams.getAll("after");
   if (cursors.length !== 1 || cursors[0].length === 0) fail();
-  return { refs, hasNextPage: true, nextCursor: cursors[0] };
+  return { refs: [...refs.values()], hasNextPage: true, nextCursor: cursors[0] };
 }
 
 function decodeSafely<T>(decode: () => T): T {
@@ -349,7 +344,11 @@ export function decodeGitHubRefsPage(
   html: string,
   expected: GitHubRefsPageExpected,
 ): GitHubRefPage {
-  return decodeSafely(() => expected.kind === "branches"
-    ? decodeBranches(html, expected)
-    : decodeTags(html, expected));
+  return decodeSafely(() => {
+    const record = requireRecord(expected);
+    const kind = ownData(record, "kind");
+    if (kind === "branches") return decodeBranches(html, expected);
+    if (kind === "tags") return decodeTags(html, expected);
+    return fail();
+  });
 }

@@ -1,7 +1,7 @@
 export type EntryKind = "directory" | "file" | "link" | "submodule";
-export type RepositoryEntry = { kind: EntryKind; name: string; path: string; sha: string };
+export type RepositoryEntry = { kind: EntryKind; name: string; path: string; sha: string | null };
 export type DirectoryListing = { path: string; sha: string; entries: RepositoryEntry[] };
-export type RefOption = { kind: "branch" | "tag"; name: string; sha: string };
+export type RefOption = { kind: "branch" | "tag"; name: string; sha: string | null };
 
 export interface RepositoryProvider {
   getHead(repo: string, signal?: AbortSignal): Promise<string>;

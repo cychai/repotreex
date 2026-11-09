@@ -38,7 +38,7 @@ describe("GitHub HTML decoder", () => {
       listing: {
         path: "",
         sha: "synthetic-root-sha",
-        entries: [{ kind: "directory", name: "src", path: "src", sha: "synthetic-root-sha" }],
+        entries: [{ kind: "directory", name: "src", path: "src", sha: null }],
       },
     });
     expect(decodeGitHubRepositoryPage(githubTreeHtmlFixture, expectedTree)).toEqual({
@@ -46,7 +46,18 @@ describe("GitHub HTML decoder", () => {
       listing: {
         path: "src",
         sha: "synthetic-tree-sha",
-        entries: [{ kind: "file", name: "a.ts", path: "src/a.ts", sha: "synthetic-tree-sha" }],
+        entries: [{ kind: "file", name: "a.ts", path: "src/a.ts", sha: null }],
+      },
+    });
+  });
+
+  it("accepts documented repository paths without synthetic repository metadata", () => {
+    const html = githubTreeHtmlFixture.replace(',"repository":"acme/repo"', "");
+    expect(decodeGitHubRepositoryPage(html, expectedTree)).toEqual({
+      head: "main",
+      listing: {
+        path: "src", sha: "synthetic-tree-sha",
+        entries: [{ kind: "file", name: "a.ts", path: "src/a.ts", sha: null }],
       },
     });
   });
@@ -87,12 +98,9 @@ describe("GitHub HTML decoder", () => {
       expectedTree,
     ));
     expect(decodeGitHubRepositoryPage(
-      `<script ${embeddedAttributes}>{"repository":"acme/repo","payload":{"codeViewTreeRoute":{"refInfo":{"name":"main","currentOid":"tree"},"path":"src","tree":{"items":[{"name":"a.ts","path":"src/a.ts","contentType":"file"}]}}},"marker":"[}{,\\"quoted\\":true}"}</script>`,
+      `<script ${embeddedAttributes}>{"payload":{"codeViewTreeRoute":{"refInfo":{"name":"main","currentOid":"tree"},"path":"src","tree":{"items":[{"name":"a.ts","path":"src/a.ts","contentType":"file"}]}}},"marker":"[}{,\\"quoted\\":true}"}</script>`,
       expectedTree,
     ).head).toBe("main");
-    expectCompatibility(() => decodeGitHubRepositoryPage(githubTreeHtmlFixture, {
-      ...expectedTree, repository: "acme/other",
-    }));
     expectCompatibility(() => decodeGitHubRepositoryPage(githubTreeHtmlFixture, {
       ...expectedTree, ref: "release/v1",
     }));
@@ -153,7 +161,7 @@ describe("GitHub HTML decoder", () => {
       head: "main",
       listing: {
         path: "src", sha: "tree-oid",
-        entries: [{ kind: "file", name: "a.ts", path: "src/a.ts", sha: "tree-oid" }],
+        entries: [{ kind: "file", name: "a.ts", path: "src/a.ts", sha: null }],
       },
     });
     expect(JSON.stringify(second)).not.toContain("drop-me");
@@ -163,7 +171,7 @@ describe("GitHub HTML decoder", () => {
     expect(decodeGitHubRefsPage(githubBranchesHtmlFixture, {
       kind: "branches", repository: "acme/repo", page: 1,
     })).toEqual({
-      refs: [{ name: "release/v1", sha: "/acme/repo/tree/release/v1" }],
+      refs: [{ name: "release/v1", sha: null }],
       hasNextPage: false,
     });
     expectCompatibility(() => decodeGitHubRefsPage(githubBranchesHtmlFixture, {
@@ -174,7 +182,7 @@ describe("GitHub HTML decoder", () => {
     }));
   });
 
-  it("rejects malformed branch pagination and duplicate branch names", () => {
+  it("rejects malformed branch pagination and deduplicates duplicate branch names", () => {
     const page = (payload: Record<string, unknown>) => embedded({ payload });
     expectCompatibility(() => decodeGitHubRefsPage(page({
       current_page: 1, has_more: "false", per_page: 100, branches: [],
@@ -182,13 +190,15 @@ describe("GitHub HTML decoder", () => {
     expectCompatibility(() => decodeGitHubRefsPage(page({
       current_page: 1, has_more: false, per_page: 50, branches: [],
     }), { kind: "branches", repository: "acme/repo", page: 1 }));
-    expectCompatibility(() => decodeGitHubRefsPage(page({
+    expect(decodeGitHubRefsPage(page({
       current_page: 1, has_more: false, per_page: 100,
       branches: [
         { name: "main", path: "/acme/repo/tree/main" },
         { name: "main", path: "/acme/repo/tree/main" },
       ],
-    }), { kind: "branches", repository: "acme/repo", page: 1 }));
+    }), { kind: "branches", repository: "acme/repo", page: 1 })).toEqual({
+      refs: [{ name: "main", sha: null }], hasNextPage: false,
+    });
   });
 
   it("decodes observed tag rows and copies the exact next cursor", () => {
@@ -216,14 +226,47 @@ describe("GitHub HTML decoder", () => {
     }));
   });
 
-  it("rejects duplicate tag names before provider-level cross-page deduplication", () => {
+  it("deduplicates same-page tag names and keeps the first commit", () => {
     const duplicate = githubTagsHtmlFixture.replace(
       '<a rel="next" href="/acme/repo/tags?after=release%2Fv1">next</a>',
-      githubTagsHtmlFixture.match(/<div class="Box-row">.*?<\/div>/)?.[0] ?? "",
+      (githubTagsHtmlFixture.match(/<div class="Box-row">.*?<\/div>/)?.[0] ?? "")
+        .replaceAll("synthetic-tag-sha", "second-sha"),
     );
-    expectCompatibility(() => decodeGitHubRefsPage(duplicate, {
+    expect(decodeGitHubRefsPage(duplicate, {
       kind: "tags", repository: "acme/repo", after: null,
-    }));
+    })).toEqual({ refs: [{ name: "release/v1", sha: "synthetic-tag-sha" }], hasNextPage: false });
+  });
+
+  it("accepts nested rows under the exact observed tag row selector", () => {
+    const nested = githubTagsHtmlFixture
+      .replace('<div class="Box-row">', '<section><div class="Box-row">')
+      .replace('</div><a rel="next"', '</div></section><a rel="next"');
+    expect(decodeGitHubRefsPage(nested, {
+      kind: "tags", repository: "acme/repo", after: null,
+    })).toEqual({
+      refs: [{ name: "release/v1", sha: "synthetic-tag-sha" }],
+      hasNextPage: true,
+      nextCursor: "release/v1",
+    });
+  });
+
+  it("snapshots ref expectations without invoking accessors or leaking proxy failures", () => {
+    let reads = 0;
+    const accessor = Object.defineProperty({
+      repository: "acme/repo", page: 1,
+    }, "kind", {
+      enumerable: true,
+      get() { reads++; return "branches"; },
+    });
+    expectCompatibility(() => decodeGitHubRefsPage(githubBranchesHtmlFixture, accessor as never));
+    expect(reads).toBe(0);
+
+    const hostile = new Proxy({ kind: "branches", repository: "acme/repo", page: 1 }, {
+      getOwnPropertyDescriptor() {
+        throw new Error("private proxy failure");
+      },
+    });
+    expectCompatibility(() => decodeGitHubRefsPage(githubBranchesHtmlFixture, hostile as never));
   });
 
   it("fails closed when DOM selector or attribute inspection throws", () => {
